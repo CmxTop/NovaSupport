@@ -1,7 +1,11 @@
 import cors from "cors";
-import express from "express";
+import express, { Response } from "express";
 import { z } from "zod";
 import { prisma } from "./db.js";
+
+function sendError(res: Response, status: number, message: string, code?: string) {
+  return res.status(status).json({ error: message, ...(code ? { code } : {}) });
+}
 
 export function createApp() {
   const app = express();
@@ -31,6 +35,48 @@ export function createApp() {
     }
 
     res.json(profile);
+  });
+
+  const createProfileSchema = z.object({
+    username: z.string().min(3).max(32).regex(/^[a-z0-9-]+$/),
+    displayName: z.string().min(1).max(64),
+    bio: z.string().max(280).optional().default(""),
+    walletAddress: z.string().startsWith("G").length(56),
+    ownerId: z.string().min(1),
+    acceptedAssets: z.array(z.object({
+      code: z.string().min(1).max(12),
+      issuer: z.string().optional(),
+    })).min(1),
+  });
+
+  app.post("/profiles", async (req, res) => {
+    const parsed = createProfileSchema.safeParse(req.body);
+
+    if (!parsed.success) {
+      return sendError(res, 400, "Invalid request body");
+    }
+
+    const { username, displayName, bio, walletAddress, ownerId, acceptedAssets } = parsed.data;
+
+    try {
+      const profile = await prisma.profile.create({
+        data: {
+          username,
+          displayName,
+          bio,
+          walletAddress,
+          ownerId,
+          acceptedAssets: { create: acceptedAssets },
+        },
+        include: { acceptedAssets: true },
+      });
+      return res.status(201).json(profile);
+    } catch (e: unknown) {
+      if (e && typeof e === "object" && "code" in e && e.code === "P2002") {
+        return sendError(res, 409, "Username already taken", "USERNAME_TAKEN");
+      }
+      return sendError(res, 500, "Internal server error");
+    }
   });
 
   const supportPayloadSchema = z.object({
