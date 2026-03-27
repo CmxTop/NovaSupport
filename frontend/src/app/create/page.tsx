@@ -57,6 +57,10 @@ const CONSTRAINTS = [
   { field: "Display name", rule: "Max 64 chars" },
   { field: "Bio", rule: "Optional · max 280 chars" },
   { field: "Wallet", rule: "Valid Stellar public key (G…)" },
+  { field: "Email", rule: "Optional · valid email format" },
+  { field: "Website", rule: "Optional · must start with https://" },
+  { field: "Twitter", rule: "Optional · max 15 chars · no @ prefix" },
+  { field: "GitHub", rule: "Optional · max 39 chars · hyphens allowed" },
 ];
 
 export default function CreatePage() {
