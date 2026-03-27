@@ -6,6 +6,7 @@ use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, E
 #[contracttype]
 pub enum DataKey {
     SupportCount,
+    RecipientCount(Address),
 }
 
 #[derive(Clone)]
@@ -49,6 +50,17 @@ impl SupportPageContract {
             .persistent()
             .set(&DataKey::SupportCount, &count);
 
+        let recipient_count = env
+            .storage()
+            .persistent()
+            .get::<DataKey, u32>(&DataKey::RecipientCount(recipient.clone()))
+            .unwrap_or(0)
+            + 1;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::RecipientCount(recipient.clone()), &recipient_count);
+
         let topic: Symbol = symbol_short!("support");
         let event = SupportEvent {
             supporter,
@@ -68,6 +80,13 @@ impl SupportPageContract {
         env.storage()
             .persistent()
             .get::<DataKey, u32>(&DataKey::SupportCount)
+            .unwrap_or(0)
+    }
+
+    pub fn recipient_count(env: Env, recipient: Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get::<DataKey, u32>(&DataKey::RecipientCount(recipient))
             .unwrap_or(0)
     }
 }
@@ -126,5 +145,25 @@ mod test {
         let (_, _, data) = events.get(0).unwrap();
         let event: SupportEvent = data.try_into_val(&env).expect("deserialize SupportEvent");
         assert_eq!(event.timestamp, 1_700_000_000);
+    }
+
+    #[test]
+    fn tracks_per_recipient_count() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(SupportPageContract, ());
+        let client = SupportPageContractClient::new(&env, &contract_id);
+
+        let supporter = Address::generate(&env);
+        let recipient_a = Address::generate(&env);
+        let recipient_b = Address::generate(&env);
+
+        client.support(&supporter, &recipient_a, &10_i128, &String::from_str(&env, "XLM"), &String::from_str(&env, ""));
+        client.support(&supporter, &recipient_a, &10_i128, &String::from_str(&env, "XLM"), &String::from_str(&env, ""));
+        client.support(&supporter, &recipient_b, &10_i128, &String::from_str(&env, "XLM"), &String::from_str(&env, ""));
+
+        assert_eq!(client.recipient_count(&recipient_a), 2);
+        assert_eq!(client.recipient_count(&recipient_b), 1);
+        assert_eq!(client.support_count(), 3);
     }
 }
