@@ -49,6 +49,9 @@ interface FormData {
   displayName: string;
   bio: string;
   walletAddress: string;
+  twitterHandle: string;
+  githubHandle: string;
+  websiteUrl: string;
 }
 
 const CONSTRAINTS = [
@@ -70,6 +73,9 @@ export default function CreatePage() {
     displayName: "",
     bio: "",
     walletAddress: "",
+    twitterHandle: "",
+    githubHandle: "",
+    websiteUrl: "",
   });
 
   const [error, setError] = useState<string | null>(null);
@@ -87,6 +93,18 @@ export default function CreatePage() {
   const walletValid =
     form.walletAddress === "" ||
     /^G[A-Z0-9]{55}$/.test(form.walletAddress);
+
+  const twitterInvalid =
+    form.twitterHandle !== "" &&
+    !/^[a-zA-Z0-9_]+$/.test(form.twitterHandle);
+
+  const githubInvalid =
+    form.githubHandle !== "" &&
+    !/^[a-zA-Z0-9\-]+$/.test(form.githubHandle);
+
+  const websiteValid =
+    form.websiteUrl === "" ||
+    /^https:\/\/.+/.test(form.websiteUrl);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -201,6 +219,71 @@ export default function CreatePage() {
                 onChange={set("bio")}
                 className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-steel/40 focus:border-mint/50 focus:outline-none focus:ring-1 focus:ring-mint/20 transition resize-none"
               />
+            </div>
+
+            {/* Row: Twitter + GitHub */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-2">
+                <label className="text-[10px] uppercase tracking-[0.25em] text-steel">
+                  Twitter / X <span className="text-steel/40">(optional)</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-steel/60 text-sm select-none">
+                    @
+                  </span>
+                  <input
+                    type="text"
+                    maxLength={15}
+                    placeholder="handle"
+                    value={form.twitterHandle}
+                    onChange={set("twitterHandle")}
+                    className="w-full rounded-2xl border border-white/10 bg-white/5 pl-8 pr-4 py-3 text-sm text-white placeholder:text-steel/40 focus:border-mint/50 focus:outline-none focus:ring-1 focus:ring-mint/20 transition"
+                  />
+                </div>
+                {twitterInvalid && (
+                  <p className="text-[10px] text-red-400 pl-1">
+                    Letters, numbers, underscores only
+                  </p>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label className="text-[10px] uppercase tracking-[0.25em] text-steel">
+                  GitHub <span className="text-steel/40">(optional)</span>
+                </label>
+                <input
+                  type="text"
+                  maxLength={39}
+                  placeholder="username"
+                  value={form.githubHandle}
+                  onChange={set("githubHandle")}
+                  className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-steel/40 focus:border-mint/50 focus:outline-none focus:ring-1 focus:ring-mint/20 transition"
+                />
+                {githubInvalid && (
+                  <p className="text-[10px] text-red-400 pl-1">
+                    Letters, numbers, hyphens only
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Website URL */}
+            <div className="flex flex-col gap-2">
+              <label className="text-[10px] uppercase tracking-[0.25em] text-steel">
+                Website <span className="text-steel/40">(optional)</span>
+              </label>
+              <input
+                type="url"
+                placeholder="https://yoursite.com"
+                value={form.websiteUrl}
+                onChange={set("websiteUrl")}
+                className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-steel/40 focus:border-mint/50 focus:outline-none focus:ring-1 focus:ring-mint/20 transition"
+              />
+              {form.websiteUrl && !websiteValid && (
+                <p className="text-[10px] text-red-400 pl-1">
+                  URL must start with https://
+                </p>
+              )}
             </div>
 
             {/* Wallet address */}
