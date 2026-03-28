@@ -105,6 +105,49 @@ const preparedTx = await server.prepareTransaction(tx);
 
 **Note:** Remember to sign the transaction with the supporter's keypair or using a wallet like Freighter before submitting.
 
+### Build & Deploy to Testnet
+
+Follow these steps to build the WASM and deploy the contract to Stellar Testnet.
+
+Prerequisites
+
+- Rust stable toolchain installed
+- Add the wasm32 target: `rustup target add wasm32-unknown-unknown`
+- Install the Stellar CLI: `cargo install --locked stellar-cli`
+
+Generate and fund a Testnet key (alternative: use the Stellar Laboratory):
+
+```bash
+# generate a named keypair for deployment
+stellar keys generate --global mykey --network testnet
+
+# fund the account (Testnet)
+stellar keys fund mykey --network testnet
+```
+
+Build
+
+```bash
+cd contract
+stellar contract build
+# Output: target/wasm32-unknown-unknown/release/support_page.wasm
+```
+
+Deploy
+
+```bash
+stellar contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/support_page.wasm \
+  --network testnet \
+  --source mykey
+```
+
+After a successful deploy the CLI will print the contract ID. Add that value to your frontend environment as `NEXT_PUBLIC_CONTRACT_ID` (for example, in `frontend/.env.local`).
+
+Notes
+
+- If you prefer a browser-based alternative for funding testnet accounts, see: https://laboratory.stellar.org
+- Keep your deploy key secure; consider using ephemeral or CI-specific keys for automated deploys.
 ### Query Functions
 
 You can also query the contract state:

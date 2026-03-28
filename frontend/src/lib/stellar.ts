@@ -10,6 +10,8 @@ import {
 } from "@stellar/stellar-sdk";
 
 import { HORIZON_URL, STELLAR_NETWORK, NETWORK_PASSPHRASE } from "./config";
+import { CONTRACT_ID } from "./config";
+import { contractClient } from "./contract-client";
 
 export const stellarConfig = {
   horizonUrl: HORIZON_URL,
@@ -53,6 +55,27 @@ export async function buildSupportIntent({
   assetIssuer,
   sequence
 }: SupportIntentInput) {
+  // Prefer Soroban contract invocation when a contract ID is configured.
+  if (CONTRACT_ID) {
+    try {
+      const contractXdr = await contractClient.buildSupportTransaction({
+        sourceAccount,
+        destination,
+        amount,
+        memo,
+        assetCode,
+        assetIssuer,
+        sequence,
+      });
+
+      if (contractXdr) return contractXdr;
+    } catch (err) {
+      // If contract client/build fails, fall back to a native payment transaction.
+      // Keep the error local and continue with the payment flow.
+      // eslint-disable-next-line no-console
+      console.warn("contract build failed, falling back to payment intent:", err);
+    }
+  }
   const account = sequence
     ? {
         accountId: () => sourceAccount,

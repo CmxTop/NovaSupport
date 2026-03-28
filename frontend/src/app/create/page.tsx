@@ -46,6 +46,9 @@ export default function CreatePage() {
 
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [assets, setAssets] = useState<Array<{ code: string; issuer: string }>>([
+    { code: "XLM", issuer: "" },
+  ]);
 
   function set(field: keyof FormData) {
     return (
@@ -133,10 +136,16 @@ export default function CreatePage() {
 
     setLoading(true);
     try {
+      const acceptedAssets = assets
+        .filter((a) => a.code.trim() !== "")
+        .map((a) => ({ code: a.code.trim(), issuer: a.issuer.trim() || undefined }));
+
+      const payload = { ...form, acceptedAssets };
+
       const res = await fetch(`${API_BASE_URL}/profiles`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       });
 
       if (res.status === 409) setError("Username already taken.");

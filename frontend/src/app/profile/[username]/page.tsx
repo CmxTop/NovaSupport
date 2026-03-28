@@ -19,6 +19,15 @@ type Profile = {
   acceptedAssets: Array<{ code: string; issuer?: string | null }>;
 };
 
+type SupportTx = {
+  txHash: string;
+  amount: string;
+  assetCode: string;
+  message?: string | null;
+  createdAt: string;
+  senderAddress: string;
+};
+
 async function getProfile(username: string): Promise<Profile> {
   // Use a cache-busting or lower revalidation for profile page
   const res = await fetch(`${API_BASE_URL}/profiles/${username}`, {
@@ -36,8 +45,23 @@ async function getProfile(username: string): Promise<Profile> {
   return res.json();
 }
 
+async function getTransactions(username: string, limit = 10): Promise<SupportTx[]> {
+  const res = await fetch(
+    `${API_BASE_URL}/profiles/${username}/transactions?limit=${limit}`,
+    { next: { revalidate: 60 } }
+  );
+
+  if (!res.ok) return [];
+
+  const body = await res.json();
+  return body.transactions ?? [];
+}
+
 export default async function ProfilePage({ params }: PageProps) {
-  const profile = await getProfile(params.username);
+  const [profile, transactions] = await Promise.all([
+    getProfile(params.username),
+    getTransactions(params.username, 10),
+  ]);
 
   return (
     <AppShell>
