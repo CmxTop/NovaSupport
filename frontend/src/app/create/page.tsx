@@ -52,6 +52,7 @@ interface FormData {
   twitterHandle: string;
   githubHandle: string;
   websiteUrl: string;
+  email: string;
 }
 
 const CONSTRAINTS = [
@@ -76,6 +77,7 @@ export default function CreatePage() {
     twitterHandle: "",
     githubHandle: "",
     websiteUrl: "",
+    email: "",
   });
 
   const [error, setError] = useState<string | null>(null);
@@ -106,12 +108,21 @@ export default function CreatePage() {
     form.websiteUrl === "" ||
     /^https:\/\/.+/.test(form.websiteUrl);
 
+  const emailValid =
+    form.email === "" ||
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
 
     if (!walletValid) {
       setError("Wallet address must be a valid Stellar public key starting with G.");
+      return;
+    }
+
+    if (!emailValid) {
+      setError("Please enter a valid email address.");
       return;
     }
 
@@ -219,6 +230,25 @@ export default function CreatePage() {
                 onChange={set("bio")}
                 className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-steel/40 focus:border-mint/50 focus:outline-none focus:ring-1 focus:ring-mint/20 transition resize-none"
               />
+            </div>
+
+            {/* Email */}
+            <div className="flex flex-col gap-2">
+              <label className="text-[10px] uppercase tracking-[0.25em] text-steel">
+                Email <span className="text-steel/40">(optional)</span>
+              </label>
+              <input
+                type="email"
+                placeholder="you@example.com"
+                value={form.email}
+                onChange={set("email")}
+                className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-steel/40 focus:border-mint/50 focus:outline-none focus:ring-1 focus:ring-mint/20 transition"
+              />
+              {form.email && !emailValid && (
+                <p className="text-[10px] text-red-400 pl-1">
+                  Enter a valid email address
+                </p>
+              )}
             </div>
 
             {/* Row: Twitter + GitHub */}
@@ -332,7 +362,7 @@ export default function CreatePage() {
             {/* Submit */}
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || !walletValid || !emailValid}
               className="w-full rounded-full bg-mint px-5 py-4 text-sm font-semibold text-ink transition hover:bg-white active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {loading ? "Creating profile…" : "Create Profile →"}
