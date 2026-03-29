@@ -305,8 +305,9 @@ export function createApp(customLogger?: Logger) {
     const parsed = supportPayloadSchema.safeParse(req.body);
 
     if (!parsed.success) {
-      req.log.warn({ issues: parsed.error.flatten() }, "validation failed");
-      return sendError(res, 400, "Invalid request body");
+      const flat = parsed.error.flatten();
+      req.log.warn({ issues: flat }, "validation failed");
+      return res.status(400).json({ error: flat });
     }
 
     const supportRecord = await prisma.supportTransaction.create({
