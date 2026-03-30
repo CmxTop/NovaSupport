@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { SupportPanel } from '@/components/support-panel';
 
 // Mock @stellar/freighter-api
@@ -9,13 +9,14 @@ vi.mock('@stellar/freighter-api', () => ({
   setAllowed: vi.fn(),
 }));
 
-vi.mock('@/lib/stellar', () => ({
-  getNetworkLabel: vi.fn(() => 'Testnet'),
-  stellarConfig: {
-    horizonUrl: 'https://horizon-testnet.stellar.org',
-    stellarNetwork: 'TESTNET',
-    networkPassphrase: 'Test SDF Network ; September 2015',
-  },
+// Mock @/lib/config to provide CONTRACT_ID
+vi.mock('@/lib/config', () => ({
+  HORIZON_URL: 'https://horizon-testnet.stellar.org',
+  API_BASE_URL: 'http://localhost:4000',
+  STELLAR_NETWORK: 'TESTNET',
+  NETWORK_PASSPHRASE: 'Test SDF Network ; September 2015',
+  CONTRACT_ID: '',
+  SOROBAN_RPC_URL: 'https://soroban-testnet.stellar.org',
 }));
 
 describe('SupportPanel', () => {

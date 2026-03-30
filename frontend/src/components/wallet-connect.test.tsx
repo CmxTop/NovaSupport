@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { WalletConnect } from '@/components/wallet-connect';
 
 // Mock @stellar/freighter-api
@@ -9,15 +9,24 @@ vi.mock('@stellar/freighter-api', () => ({
   setAllowed: vi.fn(),
 }));
 
+// Mock @/lib/config
+vi.mock('@/lib/config', () => ({
+  HORIZON_URL: 'https://horizon-testnet.stellar.org',
+  API_BASE_URL: 'http://localhost:4000',
+  STELLAR_NETWORK: 'TESTNET',
+  NETWORK_PASSPHRASE: 'Test SDF Network ; September 2015',
+  CONTRACT_ID: '',
+  SOROBAN_RPC_URL: 'https://soroban-testnet.stellar.org',
+}));
+
 import { getAddress, isAllowed, setAllowed } from '@stellar/freighter-api';
 
 describe('WalletConnect', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Clear localStorage
-    if (typeof window !== 'undefined') {
-      localStorage.clear();
-    }
+    localStorage.clear();
+    // Reset window.stellarLumens mock
+    (window as any).stellarLumens = true;
   });
 
   it('renders connect button when disconnected', () => {
@@ -40,7 +49,9 @@ describe('WalletConnect', () => {
     fireEvent.click(button);
 
     // Wait for async operations
-    await screen.findByText(/Connected address:/);
+    await waitFor(() => {
+      expect(screen.getByText(/Connected address:/)).toBeInTheDocument();
+    });
     expect(screen.getByText(/GAAAAA/)).toBeInTheDocument();
   });
 
@@ -52,7 +63,9 @@ describe('WalletConnect', () => {
     const button = screen.getByRole('button', { name: 'Connect Freighter' });
     fireEvent.click(button);
 
-    await screen.findByText(/Freighter wallet is not installed/);
+    await waitFor(() => {
+      expect(screen.getByText(/Freighter wallet is not installed/)).toBeInTheDocument();
+    });
     expect(screen.getByText(/Install it here/)).toBeInTheDocument();
   });
 });
