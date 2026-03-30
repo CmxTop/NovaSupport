@@ -11,6 +11,7 @@ const walletAddress = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
 
 let baseUrl = "";
 let profileId = "";
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 let userId = "";
 let server: ReturnType<typeof app.listen>;
 let authToken = "";

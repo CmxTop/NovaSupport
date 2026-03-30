@@ -4,7 +4,7 @@ import { rateLimit } from "express-rate-limit";
 import { pinoHttp } from "pino-http";
 import type { Logger } from "pino";
 import { z } from "zod";
-import { StrKey } from "@stellar/stellar-sdk";
+import { StrKey, Horizon } from "@stellar/stellar-sdk";
 import swaggerJsdoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
 import { prisma } from "./db.js";
@@ -15,6 +15,7 @@ import { createClient } from "@supabase/supabase-js";
 
 // Extend Express Request to include auth context
 declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
     interface Request {
       auth?: AuthContext;
@@ -24,6 +25,9 @@ declare global {
 
 const ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MAX_FILE_SIZE = 2_097_152;
+
+const horizonUrl = process.env.HORIZON_URL ?? "https://horizon-testnet.stellar.org";
+const stellarServer = new Horizon.Server(horizonUrl);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -619,6 +623,27 @@ export function createApp(customLogger?: Logger) {
     supporterId: z.string().optional().nullable(),
   });
 
+  async function verifyTransaction(txHash: string): Promise<boolean | "error"> {
+    try {
+      const tx = await stellarServer.transactions().transaction(txHash).call();
+      return tx.successful === true;
+    } catch (e: unknown) {
+      if (
+        e &&
+        typeof e === "object" &&
+        "response" in e &&
+        e.response &&
+        typeof e.response === "object" &&
+        "status" in e.response &&
+        e.response.status === 404
+      ) {
+        return false;
+      }
+      logger.error({ txHash, err: e }, "Horizon error verifying transaction");
+      return "error";
+    }
+  }
+
   /**
    * @openapi
    * /profiles/{username}/transactions:
@@ -743,6 +768,16 @@ export function createApp(customLogger?: Logger) {
       const flat = parsed.error.flatten();
       req.log.warn({ issues: flat }, "validation failed");
       return res.status(400).json({ error: flat });
+    }
+
+    const verification = await verifyTransaction(parsed.data.txHash);
+
+    if (verification === false) {
+      return res.status(422).json({ error: "Transaction hash not found or not successful on Horizon." });
+    }
+
+    if (verification === "error") {
+      return res.status(503).json({ error: "Service unavailable: unable to verify transaction with Horizon." });
     }
 
     const supportRecord = await prisma.supportTransaction.create({
