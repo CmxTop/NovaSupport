@@ -15,6 +15,7 @@ import { createClient } from "@supabase/supabase-js";
 
 // Extend Express Request to include auth context
 declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
     interface Request {
       auth?: AuthContext;
@@ -626,8 +627,16 @@ export function createApp(customLogger?: Logger) {
     try {
       const tx = await stellarServer.transactions().transaction(txHash).call();
       return tx.successful === true;
-    } catch (e: any) {
-      if (e.response && e.response.status === 404) {
+    } catch (e: unknown) {
+      if (
+        e &&
+        typeof e === "object" &&
+        "response" in e &&
+        e.response &&
+        typeof e.response === "object" &&
+        "status" in e.response &&
+        e.response.status === 404
+      ) {
         return false;
       }
       logger.error({ txHash, err: e }, "Horizon error verifying transaction");

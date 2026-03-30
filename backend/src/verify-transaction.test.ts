@@ -13,8 +13,9 @@ async function runTests() {
     const tx = await server.transactions().transaction(validHash).call();
     assert.strictEqual(tx.successful, true, "Known valid transaction should be successful");
     console.log("✅ Valid transaction check passed");
-  } catch (e: any) {
-    console.error("❌ Valid transaction check failed:", e.message);
+  } catch (e: unknown) {
+    const err = e as { message?: string };
+    console.error("❌ Valid transaction check failed:", err.message);
   }
 
   // Invalid hash
@@ -22,11 +23,20 @@ async function runTests() {
   try {
     await server.transactions().transaction(invalidHash).call();
     assert.fail("Should have thrown 404 for invalid hash");
-  } catch (e: any) {
-    if (e.response && e.response.status === 404) {
+  } catch (e: unknown) {
+    if (
+      e &&
+      typeof e === "object" &&
+      "response" in e &&
+      e.response &&
+      typeof e.response === "object" &&
+      "status" in e.response &&
+      e.response.status === 404
+    ) {
       console.log("✅ Invalid transaction check passed (404)");
     } else {
-      console.error("❌ Invalid transaction check failed with unexpected error:", e.message);
+      const err = e as { message?: string };
+      console.error("❌ Invalid transaction check failed with unexpected error:", err.message);
     }
   }
 }
