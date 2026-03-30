@@ -11,7 +11,7 @@ type Asset = {
 
 type SupportPanelProps = {
   walletAddress: string;
-  acceptedAssets: Asset[];
+  acceptedAssets?: Asset[];
 };
 
 export function SupportPanel({ walletAddress, acceptedAssets }: SupportPanelProps) {
@@ -19,7 +19,7 @@ export function SupportPanel({ walletAddress, acceptedAssets }: SupportPanelProp
   const [amount, setAmount] = useState("");
   const networkLabel = getNetworkLabel();
 
-  const selectedAsset = acceptedAssets[0];
+  const selectedAsset = acceptedAssets?.[0];
   const amountNum = parseFloat(amount);
   const isValidAmount = amountNum > 0;
   const showError = amount !== "" && !isValidAmount;
