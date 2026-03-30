@@ -12,6 +12,9 @@ import { logger } from "./logger.js";
 import { generateChallenge, verifySignature, signJWT, requireAuth, isValidStellarAddress, type AuthContext } from "./auth.js";
 import multer from "multer";
 import { createClient } from "@supabase/supabase-js";
+import { sendEmail } from "./mailer.js";
+import { contributionReceivedEmail } from "./emails/contribution-received.js";
+import { contributionSentEmail } from "./emails/contribution-sent.js";
 
 // Extend Express Request to include auth context
 declare global {
@@ -783,6 +786,50 @@ export function createApp(customLogger?: Logger) {
     const supportRecord = await prisma.supportTransaction.create({
       data: parsed.data,
     });
+
+    // Notify creator and supporter (async, best-effort)
+    (async () => {
+      try {
+        const recipientProfile = await prisma.profile.findUnique({
+          where: { id: supportRecord.profileId },
+          select: { email: true, displayName: true },
+        });
+
+        if (recipientProfile?.email) {
+          const mail = contributionReceivedEmail({
+            creatorName: recipientProfile.displayName,
+            supporterAddress: supportRecord.supporterAddress ?? "Anonymous",
+            amount: supportRecord.amount.toString(),
+            assetCode: supportRecord.assetCode,
+            message: supportRecord.message ?? undefined,
+          });
+          sendEmail({ to: recipientProfile.email, ...mail }).catch((err) => {
+            logger.error({ err, profileId: supportRecord.profileId }, "Failed to send contribution received email");
+          });
+        }
+
+        if (supportRecord.supporterAddress) {
+          const supporterProfile = await prisma.profile.findFirst({
+            where: { walletAddress: supportRecord.supporterAddress },
+            select: { email: true },
+          });
+
+          if (supporterProfile?.email) {
+            const mail = contributionSentEmail({
+              recipientName: recipientProfile?.displayName ?? supportRecord.recipientAddress,
+              amount: supportRecord.amount.toString(),
+              assetCode: supportRecord.assetCode,
+              txHash: supportRecord.txHash,
+            });
+            sendEmail({ to: supporterProfile.email, ...mail }).catch((err) => {
+              logger.error({ err, txHash: supportRecord.txHash }, "Failed to send contribution sent email");
+            });
+          }
+        }
+      } catch (err) {
+        logger.error({ err, txHash: supportRecord.txHash }, "Error in background email notification task");
+      }
+    })();
 
     req.log.info({ txHash: supportRecord.txHash }, "support transaction recorded");
     res.status(201).json(supportRecord);
