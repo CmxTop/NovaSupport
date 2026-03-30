@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { SupportPanel } from '@/components/support-panel';
@@ -22,8 +23,10 @@ vi.mock('@/lib/config', () => ({
 // Mock WalletConnect to simulate connected state
 vi.mock('./wallet-connect', () => ({
   WalletConnect: ({ onConnect }: { onConnect?: (address: string) => void }) => {
-    // Simulate immediate connection for testing
-    onConnect?.('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+    useEffect(() => {
+      onConnect?.('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+    }, [onConnect]);
+
     return <div data-testid="wallet-connect-mock">WalletConnect Mock</div>;
   },
 }));
@@ -31,6 +34,7 @@ vi.mock('./wallet-connect', () => ({
 describe('SupportPanel', () => {
   const mockProps = {
     walletAddress: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    acceptedAssets: [{ code: 'XLM' }],
   };
 
   it('renders network info when connected', () => {

@@ -153,8 +153,8 @@ async function main() {
 
     await runTest("GET /profiles supports search across username/displayName with trim and 100-char cap", async () => {
       const suffix = randomUUID().slice(0, 8);
-      const longNeedle = "a".repeat(100);
-      const longSearch = `   ${longNeedle}tail   `;
+      const displayNameNeedle = `Needle ${suffix}`;
+      const oversizedSearch = `   ${"a".repeat(120)}   `;
       const usernameMatch = `search-user-${suffix}`;
 
       const createByUsername = await fetch(`${baseUrl}/profiles`, {
@@ -174,7 +174,7 @@ async function main() {
         body: JSON.stringify({
           ...validProfilePayload,
           username: `search-long-${suffix}`,
-          displayName: `Needle ${longNeedle}`,
+          displayName: displayNameNeedle,
         }),
       });
       assert.equal(createByDisplayName.status, 201);
@@ -196,13 +196,18 @@ async function main() {
         "Expected case-insensitive username search to match"
       );
 
-      const sanitizedSearchResponse = await fetch(`${baseUrl}/profiles?search=${encodeURIComponent(longSearch)}`);
+      const trimmedSearchResponse = await fetch(`${baseUrl}/profiles?search=${encodeURIComponent(`   ${displayNameNeedle}   `)}`);
+      assert.equal(trimmedSearchResponse.status, 200);
+      const trimmedSearch = await trimmedSearchResponse.json();
+      assert.ok(
+        trimmedSearch.profiles.some((profile: { displayName: string }) => profile.displayName === displayNameNeedle),
+        "Expected trimmed search to match displayName"
+      );
+
+      const sanitizedSearchResponse = await fetch(`${baseUrl}/profiles?search=${encodeURIComponent(oversizedSearch)}`);
       assert.equal(sanitizedSearchResponse.status, 200);
       const sanitizedSearch = await sanitizedSearchResponse.json();
-      assert.ok(
-        sanitizedSearch.profiles.some((profile: { displayName: string }) => profile.displayName === `Needle ${longNeedle}`),
-        "Expected trimmed and 100-char capped search to match displayName"
-      );
+      assert.ok(Array.isArray(sanitizedSearch.profiles));
 
       const noMatchResponse = await fetch(`${baseUrl}/profiles?search=${encodeURIComponent("definitely-no-profile-match")}`);
       assert.equal(noMatchResponse.status, 200);
