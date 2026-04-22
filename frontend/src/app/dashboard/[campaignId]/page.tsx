@@ -299,6 +299,10 @@ export default function DashboardPage() {
   return (
     <AppShell>
       <div className="mx-auto max-w-7xl space-y-8">
+        <Link href={`/profile/${campaignId}`} className="text-sm text-indigo-500 hover:underline">
+          ← Back to profile
+        </Link>
+        
         <header className="flex flex-col gap-2">
           <h1 className="text-3xl font-bold tracking-tight text-white">
             Campaign <span className="text-mint">Analytics</span>
