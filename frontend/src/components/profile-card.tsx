@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { isValidStellarAddress } from "@/lib/stellar";
 
 type Asset = {
@@ -28,8 +29,15 @@ export function ProfileCard({
   twitterHandle,
   githubHandle,
 }: ProfileCardProps) {
+  const [copied, setCopied] = useState(false);
   const isValid = isValidStellarAddress(walletAddress);
   const hasSocialLinks = email || websiteUrl || twitterHandle || githubHandle;
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(walletAddress);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   return (
     <article className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-5 sm:p-7 shadow-xl shadow-black/15">
@@ -79,7 +87,15 @@ export function ProfileCard({
         </div>
         <div className="w-full sm:w-auto mt-4 sm:mt-0 rounded-3xl border border-mint/20 bg-ink/50 px-4 py-3 text-sm text-sky/80">
           <p className="font-semibold text-white">Stellar Wallet</p>
-          <p className="mt-2 break-all">{walletAddress}</p>
+          <div className="mt-2 flex items-center">
+            <p className="break-all flex-1">{walletAddress}</p>
+            <button 
+              onClick={handleCopy} 
+              className="ml-2 text-xs text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              {copied ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
           <p className={`mt-3 ${isValid ? "text-mint" : "text-gold"}`}>
             {isValid ? "Valid Stellar address" : "Replace with a valid Stellar address"}
           </p>
