@@ -432,7 +432,9 @@ export function createApp(customLogger?: Logger) {
       res.json({
         totalTransactions,
         uniqueSupporters: uniqueSupporters.length,
-        totalAmountXLM: xlmSum._sum.amount?.toString() ?? "0",
+        totalAmountXLM: xlmSum._sum.amount
+          ? xlmSum._sum.amount.toFixed(7)
+          : "0",
       });
     } catch (e: unknown) {
       req.log.error({ err: e }, "database error fetching profile stats");
