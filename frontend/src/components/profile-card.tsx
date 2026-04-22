@@ -1,3 +1,4 @@
+"use client";
 import { useState } from "react";
 import { isValidStellarAddress } from "@/lib/stellar";
 
