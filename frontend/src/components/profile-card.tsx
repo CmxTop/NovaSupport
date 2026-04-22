@@ -39,6 +39,8 @@ export function ProfileCard({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const expertUrl = `https://stellar.expert/explorer/testnet/account/${walletAddress}`;
+
   return (
     <article className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-5 sm:p-7 shadow-xl shadow-black/15">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -88,7 +90,14 @@ export function ProfileCard({
         <div className="w-full sm:w-auto mt-4 sm:mt-0 rounded-3xl border border-mint/20 bg-ink/50 px-4 py-3 text-sm text-sky/80">
           <p className="font-semibold text-white">Stellar Wallet</p>
           <div className="mt-2 flex items-center">
-            <p className="break-all flex-1">{walletAddress}</p>
+            <a
+              href={expertUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-indigo-500 hover:underline font-mono break-all flex-1"
+            >
+              {walletAddress}
+            </a>
             <button 
               onClick={handleCopy} 
               className="ml-2 text-xs text-gray-400 hover:text-gray-600 transition-colors"
