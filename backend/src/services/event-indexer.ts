@@ -171,7 +171,7 @@ export class EventIndexer {
         },
       },
     });
-    return row?.lastPagingToken ?? "0";
+    return row?.lastPagingToken ?? "";
   }
 
   private async writeCursor(token: string, _previous: string): Promise<void> {

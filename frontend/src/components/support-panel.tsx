@@ -58,6 +58,7 @@ export function SupportPanel({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [submittedHash, setSubmittedHash] = useState<string | null>(null);
   const [showResultModal, setShowResultModal] = useState(false);
+  const [submissionNote, setSubmissionNote] = useState<string | null>(null);
   const [lastTxDetails, setLastTxDetails] = useState<{
     amount: string;
     assetCode: string;
@@ -310,6 +311,7 @@ export function SupportPanel({
     setSubmittedHash(null);
     setSignedXdr(null);
     setRecurringError(null);
+    setSubmissionNote(null);
     setIsSigning(true);
 
     let resolvedSignedXdr: string;
@@ -390,6 +392,7 @@ export function SupportPanel({
         await horizonServer.submitTransaction(transactionToSubmit);
 
       console.log("Transaction submitted to Horizon:", response.hash);
+      let displayHash = response.hash;
 
       // Record confirmed on-chain transaction in the backend
       if (profileId) {
@@ -413,13 +416,20 @@ export function SupportPanel({
 
           if (!backendRes.ok) {
             const data = await backendRes.json().catch(() => ({}));
-            // 409 means tx already recorded — silently ignore
             if (backendRes.status === 429) {
               showToast(
                 formatRateLimitedMessage(parseRateLimitInfo(backendRes.headers)),
                 "error",
               );
-            } else if (backendRes.status !== 409) {
+            } else if (backendRes.status === 409) {
+              const duplicateHash =
+                typeof data.existingTxHash === "string"
+                  ? data.existingTxHash
+                  : response.hash;
+              displayHash = duplicateHash;
+              setSubmissionNote("This transaction was already recorded");
+              showToast("This transaction was already recorded", "success");
+            } else {
               console.error("Failed to record transaction in backend", data);
             }
           } else {
@@ -431,7 +441,7 @@ export function SupportPanel({
         }
       }
 
-      setSubmittedHash(response.hash);
+      setSubmittedHash(displayHash);
       setLastTxDetails({
         amount: amount,
         assetCode: paymentAsset?.code || "XLM",
@@ -828,11 +838,13 @@ export function SupportPanel({
           setSubmittedHash(null);
           setErrorMessage(null);
           setRecurringError(null);
+          setSubmissionNote(null);
         }}
         txHash={submittedHash}
         amount={lastTxDetails?.amount || ""}
         assetCode={lastTxDetails?.assetCode || "XLM"}
         recipientDisplayName={recipientDisplayName}
+        note={submissionNote}
       />
     </section>
   );

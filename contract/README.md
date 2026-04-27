@@ -43,6 +43,60 @@ The MVP only needs to show clear Soroban intent for the Stellar Wave submission.
 
 The contract ID is recorded in `frontend/.env.example` as `NEXT_PUBLIC_CONTRACT_ID`. After deploying, set the actual ID in `frontend/.env.local` (not committed) and update this table with the deployed contract ID and deployer address.
 
+## Troubleshooting
+
+If deployment or invocation fails, check the following first:
+
+- Confirm the contract was deployed to the same network your client is using.
+- Verify the contract ID in `frontend/.env.local` and any backend indexer env vars.
+- Make sure the source account is funded before invoking the contract.
+- Check the deployer and supporter addresses in Stellar Expert:
+  https://stellar.expert/explorer/testnet/contract/<CONTRACT_ID>
+
+Common failures:
+
+- `ContractNotInitialized` usually means `initialize()` has not been called yet.
+- `ContractPaused` means the admin paused support calls.
+- `InsufficientBalance` means the supporter account does not have enough of the selected asset.
+- `MessageTooLong` or `InvalidAssetCode` means the request data does not match the contract validation rules.
+
+## Verification
+
+After deploying, verify the contract is callable before shipping the frontend update.
+
+### Query contract state
+
+Use the Stellar CLI to confirm the global counter and recipient totals:
+
+```bash
+stellar contract invoke \
+  --id <CONTRACT_ID> \
+  --network testnet \
+  -- support_count
+```
+
+```bash
+stellar contract invoke \
+  --id <CONTRACT_ID> \
+  --network testnet \
+  -- recipient_count \
+  --recipient <RECIPIENT_ADDRESS>
+```
+
+### Call the contract after deploy
+
+Invoke `support()` once with a funded test account and then confirm the transaction appears in:
+
+- Horizon transaction history
+- The profile page transaction list
+- Stellar Expert: https://stellar.expert/explorer/testnet/tx/<TX_HASH>
+
+### Example state query
+
+To inspect a deployed contract in the explorer, open the contract page and confirm the latest ledger activity:
+
+https://stellar.expert/explorer/testnet/contract/<CONTRACT_ID>
+
 ## Testing & Verification
 
 Before deploying, always run the local test suite to ensure contract logic is correct.
@@ -171,29 +225,18 @@ To "upgrade" the contract:
 
 **Security Warning:** Always verify the new WASM hash against the source code before deploying to a production-like environment.
 
+## Rollback
+
+Soroban contracts are immutable once deployed, so rollback means moving traffic away from the bad instance.
+
+1. Stop using the current contract ID in the frontend and backend env files.
+2. Deploy a fresh contract version from the last known-good source.
+3. Update `NEXT_PUBLIC_CONTRACT_ID` and any backend indexer config to the new contract ID.
+4. Confirm the new contract in Stellar Expert before resuming production traffic.
+
+If the bad contract already received support events, preserve the old ID for auditability even after cutting over.
+
 Notes
 
 - If you prefer a browser-based alternative for funding testnet accounts, see: https://laboratory.stellar.org
 - Keep your deploy key secure; consider using ephemeral or CI-specific keys for automated deploys.
-### Query Functions
-
-You can also query the contract state:
-
-**Get global support count:**
-
-```bash
-stellar contract invoke \
-  --id <CONTRACT_ID> \
-  --network testnet \
-  -- support_count
-```
-
-**Get recipient-specific support count:**
-
-```bash
-stellar contract invoke \
-  --id <CONTRACT_ID> \
-  --network testnet \
-  -- recipient_count \
-  --recipient <RECIPIENT_ADDRESS>
-```
