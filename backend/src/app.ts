@@ -254,13 +254,38 @@ export function createApp(customLogger?: Logger) {
    *               walletAddress:
    *                 type: string
    *                 description: User's Stellar wallet address
+   *                 example: GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPV6LY4UV2GL6VJGIQRXFDNMADI
    *             required:
    *               - walletAddress
+   *           examples:
+   *             validRequest:
+   *               summary: Valid challenge request
+   *               value:
+   *                 walletAddress: GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPV6LY4UV2GL6VJGIQRXFDNMADI
    *     responses:
    *       200:
    *         description: Challenge generated
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 challenge:
+   *                   type: string
+   *                   example: "NovaSupport authentication challenge: 1234567890"
+   *                 walletAddress:
+   *                   type: string
+   *                   example: GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPV6LY4UV2GL6VJGIQRXFDNMADI
    *       400:
    *         description: Invalid wallet address
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 error:
+   *                   type: string
+   *                   example: Invalid wallet address
    */
   // Request a challenge nonce for wallet signature
   app.post("/auth/challenge", (req, res) => {
@@ -377,18 +402,21 @@ export function createApp(customLogger?: Logger) {
    *         schema:
    *           type: integer
    *           default: 20
+   *           example: 20
    *         description: Number of profiles to return
    *       - in: query
    *         name: offset
    *         schema:
    *           type: integer
    *           default: 0
+   *           example: 0
    *         description: Number of profiles to skip
    *       - in: query
    *         name: search
    *         schema:
    *           type: string
    *           maxLength: 100
+   *           example: john
    *         description: Optional search term for username or displayName (case-insensitive)
    *       - in: query
    *         name: sort
@@ -396,15 +424,35 @@ export function createApp(customLogger?: Logger) {
    *           type: string
    *           enum: [newest, most_supported, most_transactions]
    *           default: newest
+   *           example: newest
    *         description: Sort order for profiles
    *       - in: query
    *         name: asset
    *         schema:
    *           type: string
+   *           example: XLM
    *         description: Filter by accepted asset code (e.g., XLM, USDC)
    *     responses:
    *       200:
    *         description: List of profiles
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 profiles:
+   *                   type: array
+   *                   items:
+   *                     type: object
+   *                 total:
+   *                   type: integer
+   *                   example: 42
+   *                 limit:
+   *                   type: integer
+   *                   example: 20
+   *                 offset:
+   *                   type: integer
+   *                   example: 0
    *       500:
    *         description: Internal server error
    */
@@ -1165,29 +1213,57 @@ export function createApp(customLogger?: Logger) {
     supporterId: z.string().optional().nullable(),
   });
 
-  async function verifyTransaction(txHash: string): Promise<boolean | "error"> {
-    if (process.env.SKIP_HORIZON_VALIDATION === "true") {
-      return true;
+  const verificationCache = new Map<string, { result: boolean; timestamp: number }>();
+  const VERIFICATION_CACHE_TTL = 60 * 60 * 1000;
+
+  async function verifyTransaction(
+    txHash: string,
+    retries = 3,
+    backoffMs = 1000
+  ): Promise<boolean | "error"> {
+    const cached = verificationCache.get(txHash);
+    if (cached && Date.now() - cached.timestamp < VERIFICATION_CACHE_TTL) {
+      return cached.result;
     }
 
-    try {
-      const tx = await stellarServer.transactions().transaction(txHash).call();
-      return tx.successful === true;
-    } catch (e: unknown) {
-      if (
-        e &&
-        typeof e === "object" &&
-        "response" in e &&
-        e.response &&
-        typeof e.response === "object" &&
-        "status" in e.response &&
-        e.response.status === 404
-      ) {
-        return false;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const tx = await stellarServer.transactions().transaction(txHash).call();
+        const result = tx.successful === true;
+        
+        if (result) {
+          verificationCache.set(txHash, { result, timestamp: Date.now() });
+        }
+        
+        return result;
+      } catch (e: unknown) {
+        if (
+          e &&
+          typeof e === "object" &&
+          "response" in e &&
+          e.response &&
+          typeof e.response === "object" &&
+          "status" in e.response &&
+          e.response.status === 404
+        ) {
+          return false;
+        }
+
+        if (attempt < retries) {
+          const delay = backoffMs * Math.pow(2, attempt - 1);
+          logger.warn(
+            { txHash, attempt, delay, err: e },
+            "Horizon verification failed, retrying"
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        } else {
+          logger.error({ txHash, err: e }, "Horizon error verifying transaction after retries");
+          return "error";
+        }
       }
-      logger.error({ txHash, err: e }, "Horizon error verifying transaction");
-      return "error";
     }
+
+    return "error";
   }
 
   /**
