@@ -1165,29 +1165,57 @@ export function createApp(customLogger?: Logger) {
     supporterId: z.string().optional().nullable(),
   });
 
-  async function verifyTransaction(txHash: string): Promise<boolean | "error"> {
-    if (process.env.SKIP_HORIZON_VALIDATION === "true") {
-      return true;
+  const verificationCache = new Map<string, { result: boolean; timestamp: number }>();
+  const VERIFICATION_CACHE_TTL = 60 * 60 * 1000;
+
+  async function verifyTransaction(
+    txHash: string,
+    retries = 3,
+    backoffMs = 1000
+  ): Promise<boolean | "error"> {
+    const cached = verificationCache.get(txHash);
+    if (cached && Date.now() - cached.timestamp < VERIFICATION_CACHE_TTL) {
+      return cached.result;
     }
 
-    try {
-      const tx = await stellarServer.transactions().transaction(txHash).call();
-      return tx.successful === true;
-    } catch (e: unknown) {
-      if (
-        e &&
-        typeof e === "object" &&
-        "response" in e &&
-        e.response &&
-        typeof e.response === "object" &&
-        "status" in e.response &&
-        e.response.status === 404
-      ) {
-        return false;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const tx = await stellarServer.transactions().transaction(txHash).call();
+        const result = tx.successful === true;
+        
+        if (result) {
+          verificationCache.set(txHash, { result, timestamp: Date.now() });
+        }
+        
+        return result;
+      } catch (e: unknown) {
+        if (
+          e &&
+          typeof e === "object" &&
+          "response" in e &&
+          e.response &&
+          typeof e.response === "object" &&
+          "status" in e.response &&
+          e.response.status === 404
+        ) {
+          return false;
+        }
+
+        if (attempt < retries) {
+          const delay = backoffMs * Math.pow(2, attempt - 1);
+          logger.warn(
+            { txHash, attempt, delay, err: e },
+            "Horizon verification failed, retrying"
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        } else {
+          logger.error({ txHash, err: e }, "Horizon error verifying transaction after retries");
+          return "error";
+        }
       }
-      logger.error({ txHash, err: e }, "Horizon error verifying transaction");
-      return "error";
     }
+
+    return "error";
   }
 
   /**
