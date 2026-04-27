@@ -23,6 +23,12 @@ import multer from "multer";
 import { createClient } from "@supabase/supabase-js";
 import { sendSupportReceivedEmail } from "./services/email.js";
 import { sendVerificationEmail } from "./emails/verify-email.js";
+import {
+  getCachedLeaderboard,
+  invalidateProfileLeaderboardCache,
+  setCachedLeaderboard,
+  type LeaderboardSort,
+} from "./services/profile-leaderboard-cache.js";
 import { createHmac } from "crypto";
 import { sanitizeBody, sanitizeQuery } from "./middleware/sanitize.js";
 
@@ -1361,40 +1367,115 @@ export function createApp(customLogger?: Logger) {
 
   app.get("/profiles/:username/leaderboard", async (req, res) => {
     const { username } = req.params;
+    const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 10, 1), 100);
+    const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
+    const sort =
+      req.query.sort === "transaction_count"
+        ? "transaction_count"
+        : ("total_amount" as LeaderboardSort);
 
     const profile = await prisma.profile.findUnique({
       where: { username },
+      select: { id: true },
     });
 
     if (!profile) {
       return sendError(res, 404, "Profile not found");
     }
 
-    const grouped = await prisma.supportTransaction.groupBy({
-      by: ["supporterAddress", "assetCode"],
-      where: {
-        profileId: profile.id,
-        status: { not: "failed" },
-        supporterAddress: { not: null },
-      },
-      _sum: { amount: true },
-      _count: true,
-      orderBy: {
-        _sum: {
-          amount: "desc",
-        },
-      },
-      take: 10,
-    });
+    const cached = getCachedLeaderboard(profile.id, limit, offset, sort);
+    if (cached) {
+      return res.json(cached);
+    }
 
-    const leaderboard = grouped.map((entry: any) => ({
+    const orderBy =
+      sort === "transaction_count"
+        ? [{ _count: { _all: "desc" as const } }, { _sum: { amount: "desc" as const } }]
+        : [{ _sum: { amount: "desc" as const } }, { _count: { _all: "desc" as const } }];
+
+    const [grouped, total] = await Promise.all([
+      prisma.supportTransaction.groupBy({
+        by: ["supporterAddress", "assetCode"],
+        where: {
+          profileId: profile.id,
+          status: { not: "failed" },
+          supporterAddress: { not: null },
+        },
+        _sum: { amount: true },
+        _count: { _all: true },
+        orderBy,
+        take: limit,
+        skip: offset,
+      }),
+      prisma.supportTransaction.groupBy({
+        by: ["supporterAddress", "assetCode"],
+        where: {
+          profileId: profile.id,
+          status: { not: "failed" },
+          supporterAddress: { not: null },
+        },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const leaderboard = grouped.map((entry: any, index: number) => ({
+      rank: offset + index + 1,
       supporterAddress: entry.supporterAddress as string,
       assetCode: entry.assetCode,
       totalAmount: entry._sum.amount?.toString() ?? "0",
-      txCount: entry._count,
+      transactionCount: entry._count._all ?? 0,
     }));
 
-    return res.json(leaderboard);
+    const payload = {
+      leaderboard,
+      total: total.length,
+      limit,
+      offset,
+      sort,
+    };
+
+    setCachedLeaderboard(profile.id, limit, offset, sort, payload);
+    return res.json(payload);
+  });
+
+  app.get("/indexer/status", async (_req, res) => {
+    const contractId =
+      process.env.SOROBAN_CONTRACT_ID ??
+      process.env.CONTRACT_ID ??
+      process.env.NEXT_PUBLIC_CONTRACT_ID ??
+      "";
+    const network = process.env.INDEXER_NETWORK ?? "TESTNET";
+
+    if (!contractId) {
+      return res.json({
+        configured: false,
+        network,
+        contractId: null,
+        cursor: null,
+        lastLedger: null,
+      });
+    }
+
+    const cursor = await prisma.indexerCursor.findUnique({
+      where: {
+        network_contractId: {
+          network,
+          contractId,
+        },
+      },
+      select: {
+        lastPagingToken: true,
+        lastLedger: true,
+      },
+    });
+
+    return res.json({
+      configured: true,
+      network,
+      contractId,
+      cursor: cursor?.lastPagingToken ?? null,
+      lastLedger: cursor?.lastLedger ?? null,
+    });
   });
 
   /**
@@ -1520,9 +1601,19 @@ export function createApp(customLogger?: Logger) {
 
           return record;
         });
+        invalidateProfileLeaderboardCache(supportRecord.profileId);
       } catch (error: any) {
         if (error?.code === "P2002") {
-          return sendError(res, 409, "Transaction already recorded", "DUPLICATE_TX");
+          const existing = await prisma.supportTransaction.findUnique({
+            where: { txHash: parsed.data.txHash },
+            select: { txHash: true },
+          });
+
+          return res.status(409).json({
+            error: "Transaction already recorded",
+            code: "DUPLICATE_TX",
+            existingTxHash: existing?.txHash ?? parsed.data.txHash,
+          });
         }
         throw error;
       }

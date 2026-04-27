@@ -8,6 +8,7 @@ type TransactionResultModalProps = {
   amount: string;
   assetCode: string;
   recipientDisplayName: string;
+  note?: string | null;
   isOpen: boolean;
   onClose: () => void;
 };
@@ -17,6 +18,7 @@ export function TransactionResultModal({
   amount,
   assetCode,
   recipientDisplayName,
+  note,
   isOpen,
   onClose,
 }: TransactionResultModalProps) {
@@ -173,6 +175,12 @@ export function TransactionResultModal({
           <p className="mb-8 text-sky/80">
             You successfully sent <span className="font-bold text-white">{amount} {assetCode}</span> to <span className="font-bold text-white">{recipientDisplayName}</span>.
           </p>
+
+          {note ? (
+            <div className="mb-5 w-full rounded-2xl border border-mint/20 bg-mint/10 px-4 py-3 text-sm text-mint">
+              {note}
+            </div>
+          ) : null}
 
           {/* Transaction Info */}
           <div className="mb-8 w-full rounded-2xl border border-white/5 bg-white/5 p-4">
