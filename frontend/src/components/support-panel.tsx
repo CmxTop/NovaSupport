@@ -396,49 +396,68 @@ export function SupportPanel({
 
       // Record confirmed on-chain transaction in the backend
       if (profileId) {
-        try {
-          const token = localStorage.getItem("authToken");
-          const backendRes = await fetch(`${API_BASE_URL}/support-transactions`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            },
-            body: JSON.stringify({
-              txHash: response.hash,
-              amount,
-              assetCode: paymentAsset?.code || "XLM",
-              recipientAddress: walletAddress,
-              profileId,
-              message: message || undefined,
-            }),
-          });
+        const recordInBackend = async (retries = 3, backoffMs = 1000) => {
+          for (let attempt = 1; attempt <= retries; attempt++) {
+            try {
+              const token = localStorage.getItem("authToken");
+              const backendRes = await fetch(`${API_BASE_URL}/support-transactions`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                },
+                body: JSON.stringify({
+                  txHash: response.hash,
+                  amount,
+                  assetCode: paymentAsset?.code || "XLM",
+                  recipientAddress: walletAddress,
+                  profileId,
+                  message: message || undefined,
+                }),
+              });
 
-          if (!backendRes.ok) {
-            const data = await backendRes.json().catch(() => ({}));
-            if (backendRes.status === 429) {
-              showToast(
-                formatRateLimitedMessage(parseRateLimitInfo(backendRes.headers)),
-                "error",
-              );
-            } else if (backendRes.status === 409) {
-              const duplicateHash =
-                typeof data.existingTxHash === "string"
-                  ? data.existingTxHash
-                  : response.hash;
-              displayHash = duplicateHash;
-              setSubmissionNote("This transaction was already recorded");
-              showToast("This transaction was already recorded", "success");
-            } else {
-              console.error("Failed to record transaction in backend", data);
+              if (backendRes.status === 503 && attempt < retries) {
+                const delay = backoffMs * Math.pow(2, attempt - 1);
+                console.warn(`Backend 503, retrying in ${delay}ms (attempt ${attempt}/${retries})`);
+                await new Promise(r => setTimeout(r, delay));
+                continue;
+              }
+
+              if (!backendRes.ok) {
+                const data = await backendRes.json().catch(() => ({}));
+                if (backendRes.status === 429) {
+                  showToast(
+                    formatRateLimitedMessage(parseRateLimitInfo(backendRes.headers)),
+                    "error",
+                  );
+                } else if (backendRes.status === 409) {
+                  const duplicateHash =
+                    typeof data.existingTxHash === "string"
+                      ? data.existingTxHash
+                      : response.hash;
+                  displayHash = duplicateHash;
+                  setSubmissionNote("This transaction was already recorded");
+                  showToast("This transaction was already recorded", "success");
+                } else {
+                  console.error("Failed to record transaction in backend", data);
+                }
+              } else {
+                console.log("Transaction recorded in backend database");
+              }
+              break; // Success or non-retryable error
+            } catch (backendErr) {
+              if (attempt < retries) {
+                const delay = backoffMs * Math.pow(2, attempt - 1);
+                console.warn(`Backend connection error, retrying in ${delay}ms (attempt ${attempt}/${retries})`, backendErr);
+                await new Promise(r => setTimeout(r, delay));
+              } else {
+                console.error("Backend record error after retries", backendErr);
+              }
             }
-          } else {
-            console.log("Transaction recorded in backend database");
           }
-        } catch (backendErr) {
-          // Never surface backend errors — the on-chain tx succeeded
-          console.error("Backend record error", backendErr);
-        }
+        };
+
+        await recordInBackend();
       }
 
       setSubmittedHash(displayHash);

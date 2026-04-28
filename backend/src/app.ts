@@ -31,6 +31,7 @@ import {
 } from "./services/profile-leaderboard-cache.js";
 import { createHmac } from "crypto";
 import { sanitizeBody, sanitizeQuery } from "./middleware/sanitize.js";
+import { CircuitBreaker } from "./services/circuit-breaker.js";
 
 // Extend Express Request to include auth context
 declare global {
@@ -48,6 +49,7 @@ const MAX_FILE_SIZE = 2_097_152;
 const horizonUrl =
   process.env.HORIZON_URL ?? "https://horizon-testnet.stellar.org";
 const stellarServer = new Horizon.Server(horizonUrl);
+const horizonCircuitBreaker = new CircuitBreaker(5, 30000); // 5 failures, 30s reset
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -1219,51 +1221,65 @@ export function createApp(customLogger?: Logger) {
   async function verifyTransaction(
     txHash: string,
     retries = 3,
-    backoffMs = 1000
+    backoffMs = 1000,
+    req?: express.Request
   ): Promise<boolean | "error"> {
     const cached = verificationCache.get(txHash);
     if (cached && Date.now() - cached.timestamp < VERIFICATION_CACHE_TTL) {
       return cached.result;
     }
 
-    for (let attempt = 1; attempt <= retries; attempt++) {
-      try {
-        const tx = await stellarServer.transactions().transaction(txHash).call();
-        const result = tx.successful === true;
-        
-        if (result) {
-          verificationCache.set(txHash, { result, timestamp: Date.now() });
-        }
-        
-        return result;
-      } catch (e: unknown) {
-        if (
-          e &&
-          typeof e === "object" &&
-          "response" in e &&
-          e.response &&
-          typeof e.response === "object" &&
-          "status" in e.response &&
-          e.response.status === 404
-        ) {
-          return false;
-        }
+    const verify = async () => {
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+          const tx = await stellarServer.transactions().transaction(txHash).call();
+          const result = tx.successful === true;
+          
+          if (result) {
+            verificationCache.set(txHash, { result, timestamp: Date.now() });
+          }
+          
+          return result;
+        } catch (e: unknown) {
+          if (
+            e &&
+            typeof e === "object" &&
+            "response" in e &&
+            e.response &&
+            typeof e.response === "object" &&
+            "status" in e.response &&
+            e.response.status === 404
+          ) {
+            return false;
+          }
 
-        if (attempt < retries) {
-          const delay = backoffMs * Math.pow(2, attempt - 1);
-          logger.warn(
-            { txHash, attempt, delay, err: e },
-            "Horizon verification failed, retrying"
-          );
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        } else {
-          logger.error({ txHash, err: e }, "Horizon error verifying transaction after retries");
-          return "error";
+          if (attempt < retries) {
+            const delay = backoffMs * Math.pow(2, attempt - 1);
+            const log = req?.log ?? logger;
+            log.warn(
+              { txHash, attempt, delay, err: e },
+              "Horizon verification failed, retrying"
+            );
+            await new Promise((resolve) => setTimeout(resolve, delay));
+          } else {
+            throw e;
+          }
         }
       }
-    }
+      return "error" as const;
+    };
 
-    return "error";
+    try {
+      return await horizonCircuitBreaker.execute(verify);
+    } catch (e: any) {
+      const log = req?.log ?? logger;
+      if (e.message === "Circuit breaker is OPEN") {
+        log.warn({ txHash }, "Horizon circuit breaker is OPEN, skipping call");
+      } else {
+        log.error({ txHash, err: e }, "Horizon error verifying transaction after retries");
+      }
+      return "error";
+    }
   }
 
   /**
@@ -1625,7 +1641,7 @@ export function createApp(customLogger?: Logger) {
         return res.status(400).json({ error: flat });
       }
 
-      const verification = await verifyTransaction(parsed.data.txHash);
+      const verification = await verifyTransaction(parsed.data.txHash, 3, 1000, req);
 
       if (verification === false) {
         return res
