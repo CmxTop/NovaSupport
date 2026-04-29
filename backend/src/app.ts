@@ -415,13 +415,16 @@ export function createApp(customLogger?: Logger) {
    *         name: limit
    *         schema:
    *           type: integer
+   *           minimum: 1
+   *           maximum: 100
    *           default: 20
    *           example: 20
-   *         description: Number of profiles to return
+   *         description: Number of profiles to return (Min: 1, Max: 100)
    *       - in: query
    *         name: offset
    *         schema:
    *           type: integer
+   *           minimum: 0
    *           default: 0
    *           example: 0
    *         description: Number of profiles to skip
@@ -472,8 +475,11 @@ export function createApp(customLogger?: Logger) {
    */
   app.get("/profiles", async (req, res) => {
     try {
-      const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
-      const offset = parseInt(req.query.offset as string) || 0;
+      const pagination = paginationSchema.safeParse(req.query);
+      if (!pagination.success) {
+        return sendError(res, 400, "Invalid pagination parameters", "INVALID_PAGINATION");
+      }
+      const { limit, offset } = pagination.data;
       const rawSearch =
         typeof req.query.search === "string" ? req.query.search : "";
       const search = rawSearch.trim().slice(0, 100);
@@ -1360,12 +1366,17 @@ export function createApp(customLogger?: Logger) {
    *         name: limit
    *         schema:
    *           type: integer
+   *           minimum: 1
+   *           maximum: 100
    *           default: 20
+   *         description: Number of transactions to return (Min: 1, Max: 100)
    *       - in: query
    *         name: offset
    *         schema:
    *           type: integer
+   *           minimum: 0
    *           default: 0
+   *         description: Number of transactions to skip (Min: 0)
    *       - in: query
    *         name: network
    *         schema:
@@ -1379,9 +1390,12 @@ export function createApp(customLogger?: Logger) {
    *         description: Internal server error
    */
   app.get("/profiles/:username/transactions", async (req, res) => {
+    const pagination = paginationSchema.safeParse(req.query);
+    if (!pagination.success) {
+      return sendError(res, 400, "Invalid pagination parameters", "INVALID_PAGINATION");
+    }
+    const { limit, offset } = pagination.data;
     const { username } = req.params;
-    const limit = Math.min(parseInt(req.query.limit as string) || 20, 1000);
-    const offset = parseInt(req.query.offset as string) || 0;
     const network = req.query.network as string | undefined;
     const status = req.query.status as string | undefined;
     const assetCode = req.query.assetCode as string | undefined;
@@ -1418,8 +1432,11 @@ export function createApp(customLogger?: Logger) {
 
   // Issue #204 — GET /profiles (explore page, paginated + sortable + asset filter)
   app.get("/profiles", async (req, res) => {
-    const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
-    const offset = parseInt(req.query.offset as string) || 0;
+    const pagination = paginationSchema.safeParse(req.query);
+    if (!pagination.success) {
+      return sendError(res, 400, "Invalid pagination parameters", "INVALID_PAGINATION");
+    }
+    const { limit, offset } = pagination.data;
     const sort = (req.query.sort as string) || "newest";
     const asset = req.query.asset as string | undefined;
 
@@ -1546,9 +1563,12 @@ export function createApp(customLogger?: Logger) {
   });
 
   app.get("/profiles/:username/leaderboard", async (req, res) => {
+    const pagination = paginationSchema.safeParse(req.query);
+    if (!pagination.success) {
+      return sendError(res, 400, "Invalid pagination parameters", "INVALID_PAGINATION");
+    }
+    const { limit, offset } = pagination.data;
     const { username } = req.params;
-    const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 10, 1), 100);
-    const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
     const sort =
       req.query.sort === "transaction_count"
         ? "transaction_count"
@@ -1891,6 +1911,21 @@ export function createApp(customLogger?: Logger) {
    *         required: true
    *         schema:
    *           type: string
+   *       - in: query
+   *         name: limit
+   *         schema:
+   *           type: integer
+   *           minimum: 1
+   *           maximum: 100
+   *           default: 20
+   *         description: Number of recent transactions to return (Min: 1, Max: 100)
+   *       - in: query
+   *         name: offset
+   *         schema:
+   *           type: integer
+   *           minimum: 0
+   *           default: 0
+   *         description: Number of recent transactions to skip (Min: 0)
    *     responses:
    *       200:
    *         description: Analytics data
@@ -1898,12 +1933,13 @@ export function createApp(customLogger?: Logger) {
    *         description: Analytics not found
    */
   app.get("/analytics/:campaignId", async (req, res) => {
-    // Analytics endpoint — returns summary + recent transactions with pagination
+    const pagination = paginationSchema.safeParse(req.query);
+    if (!pagination.success) {
+      return sendError(res, 400, "Invalid pagination parameters", "INVALID_PAGINATION");
+    }
+    const { limit, offset } = pagination.data;
     const { campaignId } = req.params;
     const { startDate, endDate, format } = req.query;
-
-    const limit = Math.min(parseInt(req.query.limit as string) || 10, 50);
-    const offset = parseInt(req.query.offset as string) || 0;
 
     // Attempt to find a profile by username (campaignId maps to username)
     const profile = await prisma.profile.findUnique({
