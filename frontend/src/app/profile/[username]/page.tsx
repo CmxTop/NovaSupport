@@ -7,7 +7,7 @@ import { ProfileTabs } from "@/components/profile-tabs";
 import { QRCodeButton } from "@/components/qr-code-button";
 import { EmptyState } from "@/components/empty-state";
 import { EmbedCodeGenerator } from "@/components/embed-widget";
-import { API_BASE_URL } from "@/lib/config";
+import { API_BASE_URL, SITE_URL } from "@/lib/config";
 
 type PageProps = {
   params: {
@@ -93,16 +93,14 @@ export async function generateMetadata({
       title: `${profile.displayName} on NovaSupport`,
       description:
         profile.bio ?? `Support ${profile.displayName} on NovaSupport`,
-      images: profile.avatarUrl ? [profile.avatarUrl] : [],
-      url: `https://novasupport.xyz/profile/${params.username}`,
+      url: `${SITE_URL}/profile/${params.username}`,
       type: "profile",
     },
     twitter: {
-      card: "summary",
+      card: "summary_large_image",
       title: `${profile.displayName} on NovaSupport`,
       description:
         profile.bio ?? `Support ${profile.displayName} on NovaSupport`,
-      images: profile.avatarUrl ? [profile.avatarUrl] : [],
     },
     alternates: {
       types: {
