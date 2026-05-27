@@ -10,6 +10,7 @@ import swaggerJsdoc from "swagger-jsdoc";
 import swaggerUi from "swagger-ui-express";
 import * as Sentry from "@sentry/node";
 import compression from "compression";
+import nodemailer from "nodemailer";
 import { prisma } from "./db.js";
 import { Prisma } from "@prisma/client";
 import { logger } from "./logger.js";
@@ -45,6 +46,7 @@ declare global {
   namespace Express {
     interface Request {
       auth?: AuthContext;
+      requestId?: string;
     }
   }
 }
@@ -78,6 +80,80 @@ if (!supabaseClient) {
   logger.warn(
     "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not set — avatar upload endpoint will return 503",
   );
+}
+
+type HealthStatus = "up" | "down" | "skipped";
+
+type ServiceHealth = {
+  status: HealthStatus;
+  critical: boolean;
+  responseTimeMs?: number;
+  message?: string;
+};
+
+const HEALTH_CHECK_TIMEOUT_MS = 5_000;
+
+async function withHealthTimeout<T>(
+  check: Promise<T>,
+  service: string,
+): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  const timer = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(
+      () => reject(new Error(`${service} health check timed out`)),
+      HEALTH_CHECK_TIMEOUT_MS,
+    );
+  });
+
+  try {
+    return await Promise.race([check, timer]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function runHealthCheck(
+  service: string,
+  critical: boolean,
+  check: () => Promise<void>,
+): Promise<ServiceHealth> {
+  const startedAt = Date.now();
+
+  try {
+    await withHealthTimeout(check(), service);
+    return {
+      status: "up",
+      critical,
+      responseTimeMs: Date.now() - startedAt,
+    };
+  } catch (error) {
+    return {
+      status: "down",
+      critical,
+      responseTimeMs: Date.now() - startedAt,
+      message: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+function isSmtpConfigured(): boolean {
+  return Boolean(
+    process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS,
+  );
+}
+
+async function checkSmtpConnection(): Promise<void> {
+  const transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT ?? 587),
+    secure: process.env.SMTP_SECURE === "true",
+    auth:
+      process.env.SMTP_USER && process.env.SMTP_PASS
+        ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+        : undefined,
+  });
+
+  await transporter.verify();
 }
 
 function createRateLimiters() {
@@ -144,7 +220,56 @@ function sendError(
   message: string,
   code?: string,
 ) {
-  return res.status(status).json({ error: message, ...(code ? { code } : {}) });
+  const body: Record<string, unknown> = { error: message };
+  if (code) body.code = code;
+  const reqId = (res.req as express.Request).requestId;
+  if (reqId) body.requestId = reqId;
+  return res.status(status).json(body);
+}
+
+function getQueryString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function escapeCsvCell(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  const text = value instanceof Date ? value.toISOString() : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function toCsv(rows: unknown[][]): string {
+  return `${rows.map((row) => row.map(escapeCsvCell).join(",")).join("\n")}\n`;
+}
+
+function createAnalyticsCsv(transactions: any[]): string {
+  const headers = [
+    "Created At",
+    "Transaction Hash",
+    "Status",
+    "Amount",
+    "Asset Code",
+    "Asset Issuer",
+    "Supporter Address",
+    "Recipient Address",
+    "Message",
+  ];
+
+  const rows = transactions.map((tx) => [
+    tx.createdAt,
+    tx.txHash,
+    tx.status,
+    tx.amount.toString(),
+    tx.assetCode,
+    tx.assetIssuer ?? "",
+    tx.supporterAddress ?? "",
+    tx.recipientAddress,
+    tx.message ?? "",
+  ]);
+
+  return toCsv([headers, ...rows]);
 }
 
 export function createApp(customLogger?: Logger) {
@@ -157,8 +282,39 @@ export function createApp(customLogger?: Logger) {
       info: {
         title: "NovaSupport API",
         version: "1.0.0",
-        description:
-          "Backend API for NovaSupport — Stellar-native creator support platform",
+        description: `Backend API for NovaSupport — Stellar-native creator support platform.
+
+## Authentication
+Most write endpoints require a JWT Bearer token. Obtain one via the \`/auth/challenge\` + \`/auth/verify\` flow:
+1. POST \`/auth/challenge\` with your Stellar wallet address to get a challenge nonce.
+2. Sign the challenge with your wallet.
+3. POST \`/auth/verify\` with the wallet address and signature to receive a JWT.
+4. Include the JWT in subsequent requests as \`Authorization: Bearer <token>\`.
+
+## Rate Limiting
+All endpoints are subject to rate limiting. Response headers include:
+- \`RateLimit-Limit\`: Max requests per window
+- \`RateLimit-Remaining\`: Requests left in current window
+- \`RateLimit-Reset\`: Unix timestamp when the window resets
+
+| Limiter | Window | Limit | Applies to |
+|---------|--------|-------|------------|
+| Global | 15 min | 200 | All requests |
+| Write | 15 min | 20 | POST/PATCH/DELETE endpoints |
+| Profile creation | 1 hour | 3 | POST /profiles |
+| Email resend | 5 min | 1 | Resend verification emails |
+
+Exceeding the limit returns \`429 Too Many Requests\` with code \`RATE_LIMIT_EXCEEDED\`.
+
+## Pagination
+List endpoints accept \`limit\` (1–100, default 20) and \`offset\` (≥0, default 0) query parameters.
+Responses include \`total\`, \`limit\`, and \`offset\` fields.
+
+## Error Responses
+All errors return JSON with an \`error\` field and optional \`code\`:
+\`\`\`json
+{ "error": "Human-readable message", "code": "MACHINE_READABLE_CODE", "requestId": "abc123" }
+\`\`\``,
       },
       servers: [{ url: "http://localhost:4000" }],
       components: {
@@ -182,6 +338,29 @@ export function createApp(customLogger?: Logger) {
             description:
               "Unix timestamp (seconds) when the current rate limit window resets.",
             schema: { type: "integer" },
+          },
+          "X-Request-ID": {
+            description: "Unique request identifier for tracing.",
+            schema: { type: "string" },
+          },
+        },
+        schemas: {
+          Error: {
+            type: "object",
+            properties: {
+              error: { type: "string", description: "Human-readable error message" },
+              code: { type: "string", description: "Machine-readable error code" },
+              requestId: { type: "string", description: "Request tracing ID" },
+            },
+            required: ["error"],
+          },
+          PaginationMeta: {
+            type: "object",
+            properties: {
+              total: { type: "integer", description: "Total number of items" },
+              limit: { type: "integer", description: "Items per page" },
+              offset: { type: "integer", description: "Items skipped" },
+            },
           },
         },
       },
@@ -233,7 +412,22 @@ export function createApp(customLogger?: Logger) {
   app.use(compression({ threshold: 1024 }));
   app.use(sanitizeBody);
   app.use(sanitizeQuery);
-  app.use(pinoHttp({ logger: customLogger ?? logger }));
+
+  // ── Request ID middleware (#452) ──────────────────────────────────────
+  app.use((req, res, next) => {
+    const requestId =
+      (req.headers["x-request-id"] as string) || randomBytes(16).toString("hex");
+    req.requestId = requestId;
+    res.setHeader("X-Request-ID", requestId);
+    next();
+  });
+
+  app.use(
+    pinoHttp({
+      logger: customLogger ?? logger,
+      genReqId: (req) => req.requestId ?? randomBytes(16).toString("hex"),
+    }),
+  );
   // Attach Sentry request/tracing breadcrumbs when DSN is configured
   if (process.env.SENTRY_DSN) {
     app.use(Sentry.expressErrorHandler());
@@ -258,28 +452,72 @@ export function createApp(customLogger?: Logger) {
    *     responses:
    *       200:
    *         description: Service is healthy
+   *         content:
+   *           application/json:
+   *             example:
+   *               ok: true
+   *               service: "NovaSupport backend"
+   *               network: "Stellar Testnet"
+   *               database: "connected"
    *       503:
    *         description: Service is unhealthy or database is unreachable
+   *         content:
+   *           application/json:
+   *             example:
+   *               ok: false
+   *               service: "NovaSupport backend"
+   *               database: "unreachable"
    */
   // ── Health check with database connectivity ────────────────────────────
 
   v1Router.get("/health", async (req, res) => {
-    try {
-      await prisma.$queryRaw`SELECT 1`;
-      res.json({
-        ok: true,
-        service: "NovaSupport backend",
-        network: "Stellar Testnet",
-        database: "connected",
-      });
-    } catch (e: unknown) {
-      req.log.error({ err: e }, "health check database error");
-      res.status(503).json({
-        ok: false,
-        service: "NovaSupport backend",
-        database: "unreachable",
-      });
+    const checks = {
+      database: await runHealthCheck("database", true, async () => {
+        await prisma.$queryRaw`SELECT 1`;
+      }),
+      horizon: await runHealthCheck("horizon", true, async () => {
+        await stellarServer.ledgers().order("desc").limit(1).call();
+      }),
+      supabase: supabaseClient
+        ? await runHealthCheck("supabase", false, async () => {
+            const { error } = await supabaseClient.storage.listBuckets();
+            if (error) {
+              throw error;
+            }
+          })
+        : {
+            status: "skipped",
+            critical: false,
+            message: "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not configured",
+          } satisfies ServiceHealth,
+      smtp: isSmtpConfigured()
+        ? await runHealthCheck("smtp", false, checkSmtpConnection)
+        : {
+            status: "skipped",
+            critical: false,
+            message: "SMTP_HOST, SMTP_USER, or SMTP_PASS is not configured",
+          } satisfies ServiceHealth,
+    };
+
+    for (const [service, status] of Object.entries(checks)) {
+      if (status.critical && status.status === "down") {
+        req.log.error({ service, status }, "critical health check failed");
+      } else if (!status.critical && status.status === "down") {
+        req.log.warn({ service, status }, "non-critical health check failed");
+      }
     }
+
+    const criticalServicesHealthy = Object.values(checks).every(
+      (status) => !status.critical || status.status === "up",
+    );
+
+    res.status(criticalServicesHealthy ? 200 : 503).json({
+      ok: criticalServicesHealthy,
+      service: "NovaSupport backend",
+      network: "Stellar Testnet",
+      timestamp: new Date().toISOString(),
+      checks,
+    });
   });
 
   // ── Authentication ─────────────────────────────────────────────────────
@@ -289,6 +527,10 @@ export function createApp(customLogger?: Logger) {
    * /auth/challenge:
    *   post:
    *     summary: Request a challenge nonce for wallet signature
+   *     description: |
+   *       Step 1 of authentication. Send your Stellar wallet address to receive a challenge nonce.
+   *       Sign the challenge with your wallet, then call POST /auth/verify to get a JWT.
+   *       Rate limited to 200 requests per 15 minutes (global) and 20 per 15 minutes (write).
    *     requestBody:
    *       required: true
    *       content:
@@ -640,21 +882,94 @@ export function createApp(customLogger?: Logger) {
    * @openapi
    * /profiles/search:
    *   get:
-   *     summary: Search profiles by username or display name
+   *     summary: Search profiles with fuzzy matching
+   *     description: |
+   *       Searches profiles by username or display name using PostgreSQL pg_trgm fuzzy matching.
+   *       Tolerates typos and returns results sorted by relevance score.
+   *       Returns suggestions when no matches are found.
    *     parameters:
    *       - in: query
    *         name: q
    *         required: true
    *         schema:
    *           type: string
-   *         description: Search query (case-insensitive)
+   *           minLength: 1
+   *           maxLength: 100
+   *           example: jhonn
+   *         description: Search query (fuzzy, typo-tolerant)
+   *       - in: query
+   *         name: limit
+   *         schema:
+   *           type: integer
+   *           minimum: 1
+   *           maximum: 50
+   *           default: 10
+   *         description: Max results to return
    *     responses:
    *       200:
-   *         description: Search results (up to 10 profiles)
+   *         description: Search results sorted by relevance
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 profiles:
+   *                   type: array
+   *                   items:
+   *                     type: object
+   *                     properties:
+   *                       username:
+   *                         type: string
+   *                         example: john_doe
+   *                       displayName:
+   *                         type: string
+   *                         example: John Doe
+   *                       avatarUrl:
+   *                         type: string
+   *                         nullable: true
+   *                       bio:
+   *                         type: string
+   *                       relevance:
+   *                         type: number
+   *                         format: float
+   *                         description: Similarity score (0–1)
+   *                         example: 0.65
+   *                 suggestions:
+   *                   type: array
+   *                   items:
+   *                     type: string
+   *                   description: Suggested usernames when no profiles match
+   *             examples:
+   *               matchFound:
+   *                 summary: Profiles found
+   *                 value:
+   *                   profiles:
+   *                     - username: john_doe
+   *                       displayName: John Doe
+   *                       avatarUrl: "https://example.com/avatar.jpg"
+   *                       bio: "Creator on Stellar"
+   *                       relevance: 0.65
+   *                   suggestions: []
+   *               noMatch:
+   *                 summary: No matches — suggestions returned
+   *                 value:
+   *                   profiles: []
+   *                   suggestions: ["john_doe", "jane_doe"]
+   *                   message: "No profiles found. Did you mean one of these?"
    *       400:
    *         description: Missing or empty query parameter
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   *             example:
+   *               error: "Query parameter 'q' is required and cannot be empty"
    *       500:
    *         description: Internal server error
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
    */
   v1Router.get("/profiles/search", async (req, res) => {
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
@@ -668,23 +983,62 @@ export function createApp(customLogger?: Logger) {
     }
 
     try {
-      const profiles = await prisma.profile.findMany({
-        where: {
-          OR: [
-            { username: { contains: q, mode: "insensitive" } },
-            { displayName: { contains: q, mode: "insensitive" } },
-          ],
-        },
-        take: 10,
-        select: {
-          username: true,
-          displayName: true,
-          avatarUrl: true,
-          bio: true,
-        },
-      });
+      // Ensure pg_trgm extension is available
+      await prisma.$executeRawUnsafe("CREATE EXTENSION IF NOT EXISTS pg_trgm");
 
-      res.json(profiles);
+      const limit = Math.min(parseInt(req.query.limit as string) || 10, 50);
+
+      // Fuzzy search with relevance scoring using pg_trgm similarity
+      const profiles = await prisma.$queryRawUnsafe<
+        Array<{
+          username: string;
+          displayName: string;
+          avatarUrl: string | null;
+          bio: string;
+          relevance: number;
+        }>
+      >(
+        `SELECT
+          "username",
+          "displayName",
+          "avatarUrl",
+          "bio",
+          GREATEST(
+            similarity("username", $1),
+            similarity("displayName", $1)
+          ) AS relevance
+        FROM "Profile"
+        WHERE
+          similarity("username", $1) > 0.1
+          OR similarity("displayName", $1) > 0.1
+          OR "username" ILIKE '%' || $1 || '%'
+          OR "displayName" ILIKE '%' || $1 || '%'
+        ORDER BY relevance DESC, "username" ASC
+        LIMIT $2`,
+        q,
+        limit,
+      );
+
+      if (profiles.length === 0) {
+        // Return search suggestions when no results found
+        const suggestions = await prisma.$queryRawUnsafe<
+          Array<{ username: string; displayName: string }>
+        >(
+          `SELECT "username", "displayName"
+          FROM "Profile"
+          ORDER BY similarity("username", $1) DESC
+          LIMIT 3`,
+          q,
+        );
+
+        return res.json({
+          profiles: [],
+          suggestions: suggestions.map((s) => s.username),
+          message: "No profiles found. Did you mean one of these?",
+        });
+      }
+
+      res.json({ profiles, suggestions: [] });
     } catch (e: unknown) {
       req.log.error({ err: e }, "database error searching profiles");
       return sendError(res, 500, "Internal server error");
@@ -704,13 +1058,83 @@ export function createApp(customLogger?: Logger) {
    *         required: true
    *         schema:
    *           type: string
+   *           example: john_doe
    *     responses:
    *       200:
    *         description: Profile found
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 id:
+   *                   type: string
+   *                 username:
+   *                   type: string
+   *                 displayName:
+   *                   type: string
+   *                 bio:
+   *                   type: string
+   *                 avatarUrl:
+   *                   type: string
+   *                   nullable: true
+   *                 walletAddress:
+   *                   type: string
+   *                 email:
+   *                   type: string
+   *                   nullable: true
+   *                 websiteUrl:
+   *                   type: string
+   *                   nullable: true
+   *                 twitterHandle:
+   *                   type: string
+   *                   nullable: true
+   *                 githubHandle:
+   *                   type: string
+   *                   nullable: true
+   *                 acceptedAssets:
+   *                   type: array
+   *                   items:
+   *                     type: object
+   *                     properties:
+   *                       code:
+   *                         type: string
+   *                       issuer:
+   *                         type: string
+   *                         nullable: true
+   *                 createdAt:
+   *                   type: string
+   *                   format: date-time
+   *             example:
+   *               id: "clx1abc123"
+   *               username: "john_doe"
+   *               displayName: "John Doe"
+   *               bio: "Stellar ecosystem builder"
+   *               avatarUrl: "https://example.com/avatar.jpg"
+   *               walletAddress: "GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPV6LY4UV2GL6VJGIQRXFDNMADI"
+   *               email: "john@example.com"
+   *               websiteUrl: "https://johndoe.com"
+   *               twitterHandle: "johndoe"
+   *               githubHandle: "johndoe"
+   *               acceptedAssets:
+   *                 - code: "XLM"
+   *                 - code: "USDC"
+   *                   issuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3THOJ2E37CEGOEZWDSP"
+   *               createdAt: "2025-01-15T10:30:00.000Z"
    *       404:
    *         description: Profile not found
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   *             example:
+   *               error: "Profile not found"
    *       500:
    *         description: Internal server error
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
    */
   v1Router.get("/profiles/:username", async (req, res) => {
     try {
@@ -831,6 +1255,10 @@ export function createApp(customLogger?: Logger) {
    * /profiles:
    *   post:
    *     summary: Create a new profile
+   *     description: |
+   *       Create a new creator profile. Requires JWT authentication — the wallet address in the request must match the authenticated user.
+   *       **Rate limits:** 3 profiles per hour per IP (profile creation limiter) + 20 requests per 15 min (write limiter).
+   *       Usernames must be 3–32 characters, lowercase alphanumeric with hyphens only.
    *     security:
    *       - bearerAuth: []
    *     requestBody:
@@ -842,31 +1270,47 @@ export function createApp(customLogger?: Logger) {
    *             properties:
    *               username:
    *                 type: string
+   *                 minLength: 3
+   *                 maxLength: 32
+   *                 pattern: '^[a-z0-9-]+$'
+   *                 example: john_doe
    *               displayName:
    *                 type: string
+   *                 maxLength: 64
+   *                 example: John Doe
    *               bio:
    *                 type: string
+   *                 maxLength: 280
+   *                 example: "Stellar ecosystem builder and content creator"
    *               walletAddress:
    *                 type: string
+   *                 example: GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPV6LY4UV2GL6VJGIQRXFDNMADI
    *               email:
    *                 type: string
    *                 format: email
+   *                 example: john@example.com
    *               websiteUrl:
    *                 type: string
    *                 format: uri
+   *                 example: "https://johndoe.com"
    *               twitterHandle:
    *                 type: string
+   *                 example: johndoe
    *               githubHandle:
    *                 type: string
+   *                 example: johndoe
    *               acceptedAssets:
    *                 type: array
+   *                 minItems: 1
    *                 items:
    *                   type: object
    *                   properties:
    *                     code:
    *                       type: string
+   *                       example: XLM
    *                     issuer:
    *                       type: string
+   *                       example: GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3THOJ2E37CEGOEZWDSP
    *                   required:
    *                     - code
    *             required:
@@ -877,14 +1321,63 @@ export function createApp(customLogger?: Logger) {
    *     responses:
    *       201:
    *         description: Profile created
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               description: Created profile with acceptedAssets
    *       400:
    *         description: Invalid request body or validation failed
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   *             example:
+   *               error: "Invalid request body"
+   *       401:
+   *         description: Missing or invalid JWT
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
    *       403:
    *         description: Wallet address does not match authenticated user
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   *             example:
+   *               error: "Forbidden: Wallet address does not match authenticated user"
    *       409:
    *         description: Email or username already taken
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   *             examples:
+   *               usernameTaken:
+   *                 value:
+   *                   error: "Username already taken"
+   *                   code: "USERNAME_TAKEN"
+   *               emailTaken:
+   *                 value:
+   *                   error: "Email already taken"
+   *                   code: "EMAIL_TAKEN"
+   *       429:
+   *         description: Rate limit exceeded
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   *             example:
+   *               error: "Too many profiles created from this IP address. Please try again in an hour."
+   *               code: "RATE_LIMIT_EXCEEDED"
    *       500:
    *         description: Internal server error
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
    */
   v1Router.post("/profiles", requireAuth, profileCreationLimiter, writeLimiter, async (req, res) => {
     const parsed = createProfileSchema.safeParse(req.body);
@@ -1005,6 +1498,9 @@ export function createApp(customLogger?: Logger) {
    * /profiles/{username}:
    *   patch:
    *     summary: Update profile
+   *     description: |
+   *       Update profile fields. Requires authentication — the JWT wallet address must match the profile owner.
+   *       Changing email triggers a new verification email.
    *     security:
    *       - bearerAuth: []
    *     parameters:
@@ -1013,6 +1509,7 @@ export function createApp(customLogger?: Logger) {
    *         required: true
    *         schema:
    *           type: string
+   *           example: john_doe
    *     requestBody:
    *       content:
    *         application/json:
@@ -1021,34 +1518,84 @@ export function createApp(customLogger?: Logger) {
    *             properties:
    *               displayName:
    *                 type: string
+   *                 maxLength: 64
+   *                 example: "John D."
    *               bio:
    *                 type: string
+   *                 maxLength: 280
+   *                 example: "Updated bio — Stellar builder"
    *               avatarUrl:
    *                 type: string
    *                 format: uri
    *               email:
    *                 type: string
    *                 format: email
+   *                 example: "newemail@example.com"
    *               websiteUrl:
    *                 type: string
    *                 format: uri
+   *                 example: "https://johndoe.com"
    *               twitterHandle:
    *                 type: string
+   *                 example: "johndoe"
    *               githubHandle:
    *                 type: string
+   *                 example: "johndoe"
    *     responses:
    *       200:
    *         description: Profile updated
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               description: Updated profile object with acceptedAssets
    *       400:
    *         description: Invalid request body
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   *             example:
+   *               error: "Invalid request body"
+   *       401:
+   *         description: Missing or invalid authentication token
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   *             example:
+   *               error: "Unauthorized"
    *       403:
    *         description: Authenticated user does not own this profile
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   *             example:
+   *               error: "Forbidden: You do not own this profile"
    *       404:
    *         description: Profile not found
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   *             example:
+   *               error: "Profile not found"
    *       409:
    *         description: Email already in use
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   *             example:
+   *               error: "Email already in use"
+   *               code: "EMAIL_TAKEN"
    *       500:
    *         description: Internal server error
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
    */
   v1Router.patch(
     "/profiles/:username",
@@ -1470,12 +2017,14 @@ export function createApp(customLogger?: Logger) {
    * /profiles/{username}/transactions:
    *   get:
    *     summary: Get profile support transactions
+   *     description: Returns paginated support transactions for a profile, with optional filtering by network, status, and asset code.
    *     parameters:
    *       - in: path
    *         name: username
    *         required: true
    *         schema:
    *           type: string
+   *           example: john_doe
    *       - in: query
    *         name: limit
    *         schema:
@@ -1495,13 +2044,84 @@ export function createApp(customLogger?: Logger) {
    *         name: network
    *         schema:
    *           type: string
+   *           enum: [TESTNET, MAINNET]
+   *         description: Filter by Stellar network
+   *       - in: query
+   *         name: status
+   *         schema:
+   *           type: string
+   *           enum: [pending, SUCCESS, failed]
+   *         description: Filter by transaction status
+   *       - in: query
+   *         name: assetCode
+   *         schema:
+   *           type: string
+   *           example: XLM
+   *         description: Filter by asset code
    *     responses:
    *       200:
-   *         description: List of transactions
+   *         description: Paginated list of transactions
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 transactions:
+   *                   type: array
+   *                   items:
+   *                     type: object
+   *                     properties:
+   *                       txHash:
+   *                         type: string
+   *                       amount:
+   *                         type: string
+   *                       assetCode:
+   *                         type: string
+   *                       assetIssuer:
+   *                         type: string
+   *                         nullable: true
+   *                       status:
+   *                         type: string
+   *                       message:
+   *                         type: string
+   *                         nullable: true
+   *                       supporterAddress:
+   *                         type: string
+   *                         nullable: true
+   *                       createdAt:
+   *                         type: string
+   *                         format: date-time
+   *                 total:
+   *                   type: integer
+   *                 limit:
+   *                   type: integer
+   *                 offset:
+   *                   type: integer
+   *             example:
+   *               transactions:
+   *                 - txHash: "abc123def456..."
+   *                   amount: "10.0000000"
+   *                   assetCode: "XLM"
+   *                   assetIssuer: null
+   *                   status: "SUCCESS"
+   *                   message: "Keep up the great work!"
+   *                   supporterAddress: "GBZXN7..."
+   *                   createdAt: "2025-03-15T14:30:00.000Z"
+   *               total: 42
+   *               limit: 20
+   *               offset: 0
    *       404:
    *         description: Profile not found
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
    *       500:
    *         description: Internal server error
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
    */
   v1Router.get("/profiles/:username/transactions", async (req, res) => {
     const pagination = paginationSchema.safeParse(req.query);
@@ -1904,6 +2524,11 @@ export function createApp(customLogger?: Logger) {
    * /support-transactions:
    *   post:
    *     summary: Record a support transaction
+   *     description: |
+   *       Record a Stellar support transaction after it has been submitted to the network.
+   *       The API verifies the transaction hash against Horizon before recording.
+   *       Triggers milestone checks, email notifications, and webhook deliveries.
+   *       **Rate limits:** 20 requests per 15 minutes (write limiter).
    *     security:
    *       - bearerAuth: []
    *     requestBody:
@@ -1915,15 +2540,21 @@ export function createApp(customLogger?: Logger) {
    *             properties:
    *               txHash:
    *                 type: string
+   *                 example: "abc123def456789..."
    *               amount:
    *                 type: string
+   *                 example: "10.0000000"
    *               assetCode:
    *                 type: string
+   *                 example: XLM
    *               assetIssuer:
    *                 type: string
+   *                 nullable: true
+   *                 example: GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3THOJ2E37CEGOEZWDSP
    *               status:
    *                 type: string
    *                 default: pending
+   *                 example: SUCCESS
    *               message:
    *                 type: string
    *                 maxLength: 280
@@ -1934,14 +2565,19 @@ export function createApp(customLogger?: Logger) {
    *               stellarNetwork:
    *                 type: string
    *                 default: TESTNET
+   *                 example: TESTNET
    *               supporterAddress:
    *                 type: string
+   *                 example: GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPV6LY4UV2GL6VJGIQRXFDNMADI
    *               recipientAddress:
    *                 type: string
+   *                 example: GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3THOJ2E37CEGOEZWDSP
    *               profileId:
    *                 type: string
+   *                 example: clx1abc123
    *               supporterId:
    *                 type: string
+   *                 nullable: true
    *             required:
    *               - txHash
    *               - amount
@@ -1951,14 +2587,66 @@ export function createApp(customLogger?: Logger) {
    *     responses:
    *       201:
    *         description: Support transaction recorded
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               description: Created support transaction record
    *       400:
    *         description: Invalid request body
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   *             example:
+   *               error:
+   *                 formErrors: []
+   *                 fieldErrors:
+   *                   txHash: ["Required"]
+   *       401:
+   *         description: Missing or invalid JWT
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   *       409:
+   *         description: Duplicate transaction hash
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   *             example:
+   *               error: "Transaction already recorded"
+   *               code: "DUPLICATE_TX"
+   *               existingTxHash: "abc123def456789..."
    *       422:
-   *         description: Transaction rejected by Horizon
+   *         description: Transaction not found or rejected by Horizon
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   *             example:
+   *               error: "Transaction hash not found or not successful on Horizon."
+   *       429:
+   *         description: Rate limit exceeded
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
    *       503:
-   *         description: Horizon is unavailable
+   *         description: Horizon is unavailable (circuit breaker open)
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   *             example:
+   *               error: "Service unavailable: unable to verify transaction with Horizon."
    *       500:
    *         description: Internal server error
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
    */
   v1Router.post(
     "/support-transactions",
@@ -2242,9 +2930,27 @@ export function createApp(customLogger?: Logger) {
    *           minimum: 0
    *           default: 0
    *         description: Number of recent transactions to skip (Min: 0)
+   *       - in: query
+   *         name: format
+   *         schema:
+   *           type: string
+   *           enum: [json, csv]
+   *         description: Use csv to download transaction-level analytics data
+   *       - in: query
+   *         name: startDate
+   *         schema:
+   *           type: string
+   *           format: date-time
+   *         description: Include transactions created on or after this date
+   *       - in: query
+   *         name: endDate
+   *         schema:
+   *           type: string
+   *           format: date-time
+   *         description: Include transactions created on or before this date
    *     responses:
    *       200:
-   *         description: Analytics data
+   *         description: Analytics data or CSV export
    *       404:
    *         description: Analytics not found
    */
@@ -2253,9 +2959,10 @@ export function createApp(customLogger?: Logger) {
     if (!pagination.success) {
       return sendError(res, 400, "Invalid pagination parameters", "INVALID_PAGINATION");
     }
-    const { limit, offset } = pagination.data;
     const { campaignId } = req.params;
-    const { startDate, endDate, format } = req.query;
+    const format = getQueryString(req.query.format);
+    const startDate = getQueryString(req.query.startDate) ?? getQueryString(req.query.from);
+    const endDate = getQueryString(req.query.endDate) ?? getQueryString(req.query.to);
 
     // Attempt to find a profile by username (campaignId maps to username)
     const profile = await prisma.profile.findUnique({
@@ -2270,25 +2977,38 @@ export function createApp(customLogger?: Logger) {
     try {
       const { getAnalytics } = await import("./analytics.js");
       
-      const start = startDate ? new Date(startDate as string) : undefined;
-      const end = endDate ? new Date(endDate as string) : undefined;
+      const start = startDate ? new Date(startDate) : undefined;
+      const end = endDate ? new Date(endDate) : undefined;
       
       if ((startDate && isNaN(start!.getTime())) || (endDate && isNaN(end!.getTime()))) {
         return sendError(res, 400, "Invalid date format");
       }
 
-      const analytics = await getAnalytics(
-        profile.id, 
-        start, 
-        end, 
-        format as "json" | "csv"
-      );
+      if (start && end && start > end) {
+        return sendError(res, 400, "startDate must be before endDate");
+      }
 
       if (format === "csv") {
-        res.setHeader("Content-Type", "text/csv");
-        res.setHeader("Content-Disposition", `attachment; filename=analytics-${campaignId}.csv`);
-        return res.send(analytics);
+        const transactions = await prisma.supportTransaction.findMany({
+          where: {
+            profileId: profile.id,
+            ...(start || end
+              ? { createdAt: { ...(start ? { gte: start } : {}), ...(end ? { lte: end } : {}) } }
+              : {}),
+          },
+          orderBy: { createdAt: "desc" },
+        });
+        const filenameSafeCampaignId = campaignId.replace(/[^a-zA-Z0-9_-]/g, "-");
+
+        res.setHeader("Content-Type", "text/csv; charset=utf-8");
+        res.setHeader(
+          "Content-Disposition",
+          `attachment; filename="analytics-${filenameSafeCampaignId}-${new Date().toISOString().split("T")[0]}.csv"`,
+        );
+        return res.send(createAnalyticsCsv(transactions));
       }
+
+      const analytics = await getAnalytics(profile.id, start, end, "json");
 
       res.json({
         profile: { username: profile.username, displayName: profile.displayName },
@@ -2586,13 +3306,35 @@ export function createApp(customLogger?: Logger) {
         total: total.toFixed(7),
       }));
 
-      const recentTransactions = transactions.slice(0, 10).map((tx: any) => ({
+      const supportedProfiles = Array.from(
+        transactions
+          .reduce((profiles: Map<string, { username: string; displayName: string; totalTransactions: number }>, tx: any) => {
+            const existing = profiles.get(tx.profileId);
+            if (existing) {
+              existing.totalTransactions += 1;
+              return profiles;
+            }
+
+            profiles.set(tx.profileId, {
+              username: tx.profile.username,
+              displayName: tx.profile.displayName,
+              totalTransactions: 1,
+            });
+            return profiles;
+          }, new Map())
+          .values(),
+      ).sort((a, b) => b.totalTransactions - a.totalTransactions);
+
+      const history = transactions.map((tx: any) => ({
+        id: tx.id,
         profileUsername: tx.profile.username,
         profileDisplayName: tx.profile.displayName,
         amount: tx.amount.toString(),
         assetCode: tx.assetCode,
+        assetIssuer: tx.assetIssuer,
         createdAt: tx.createdAt,
         txHash: tx.txHash,
+        message: tx.message,
       }));
 
       return res.json({
@@ -2600,7 +3342,9 @@ export function createApp(customLogger?: Logger) {
         totalTransactions: transactions.length,
         profilesSupported,
         totalByAsset,
-        recentTransactions,
+        supportedProfiles,
+        transactions: history,
+        recentTransactions: history.slice(0, 10),
       });
     } catch {
       return sendError(res, 500, "Internal server error");
@@ -2850,14 +3594,14 @@ export function createApp(customLogger?: Logger) {
 
   // Generic error fallback (logs + returns JSON)
   app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    logger.error({ err, path: req.path, method: req.method }, "Unhandled application error");
+    logger.error({ err, path: req.path, method: req.method, requestId: req.requestId }, "Unhandled application error");
     if (process.env.SENTRY_DSN) {
       Sentry.captureException(err, {
-        extra: { path: req.path, method: req.method },
+        extra: { path: req.path, method: req.method, requestId: req.requestId },
       });
     }
     if (!res.headersSent) {
-      res.status(500).json({ error: "Internal server error" });
+      res.status(500).json({ error: "Internal server error", requestId: req.requestId });
     }
   });
 
