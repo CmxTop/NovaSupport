@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useCallback, KeyboardEvent } from "react";
 import { useToast } from "@/lib/use-toast";
-import { signTransaction } from "@stellar/freighter-api";
 import {
   Asset as StellarAsset,
   TransactionBuilder,
@@ -16,6 +15,11 @@ import {
   withStellarRetry,
   classifyStellarError,
 } from "@/lib/stellar";
+import {
+  getWalletAdapter,
+  mapWalletError,
+  type WalletId,
+} from "@/lib/wallet-adapters";
 import { WalletConnect } from "./wallet-connect";
 import { TransactionResultModal } from "./transaction-result-modal";
 import { API_BASE_URL } from "@/lib/config";
@@ -285,45 +289,13 @@ export function SupportPanel({
     if (transactionCode === "tx_insufficient_balance")
       return "Insufficient balance";
     if (transactionCode === "tx_bad_auth" || operationCode === "op_bad_auth")
-      return "Authorization failed. Please reconnect Freighter and try again.";
+      return "Authorization failed. Please reconnect your wallet and try again.";
 
     if (error instanceof Error && error.message) return error.message;
     return "Unable to submit transaction to Stellar. Please try again.";
   }
 
-  function mapFreighterError(error: unknown): string {
-    const msg =
-      error instanceof Error
-        ? error.message
-        : typeof error === "string"
-          ? error
-          : "";
 
-    const lower = msg.toLowerCase();
-
-    if (
-      lower.includes("user declined") ||
-      lower.includes("user rejected") ||
-      lower.includes("rejected") ||
-      lower.includes("declined")
-    ) {
-      return "You declined the transaction in Freighter.";
-    }
-
-    if (
-      lower.includes("not installed") ||
-      lower.includes("no freighter") ||
-      lower.includes("freighter is not")
-    ) {
-      return "Freighter is not installed. Please install the Freighter browser extension and try again.";
-    }
-
-    if (lower.includes("not allowed") || lower.includes("permission")) {
-      return "Freighter access was not granted. Please allow the site in Freighter and try again.";
-    }
-
-    return msg || "Freighter did not return a signed transaction.";
-  }
 
   async function handleSendSupport() {
     if (!visitorAddress || !isValidAmount || isProcessing || noPathFound) {
@@ -332,7 +304,7 @@ export function SupportPanel({
 
     // Full on-chain flow for issue #179:
     // 1. Build transaction XDR with buildSupportIntent()
-    // 2. Sign with Freighter's signTransaction()
+    // 2. Sign with the connected wallet adapter
     // 3. Broadcast to Horizon with submitTransaction()
     // 4. Record in backend via POST /support-transactions
     // 5. Show success modal with transaction hash
@@ -383,27 +355,23 @@ export function SupportPanel({
         });
       }
 
-      // Open Freighter signing prompt — user sees "Waiting for Freighter signature…"
-      const signedResult = await signTransaction(unsignedXdr, {
+      // Open wallet signing prompt
+      const walletId = localStorage.getItem("walletId") as WalletId | null;
+      const adapter = walletId ? getWalletAdapter(walletId) : null;
+      if (!adapter) {
+        throw new Error("No wallet connected. Please connect a Stellar wallet.");
+      }
+
+      resolvedSignedXdr = await adapter.signTransaction(unsignedXdr, {
         address: visitorAddress,
         networkPassphrase: stellarConfig.networkPassphrase,
       });
 
-      if (signedResult.error || !signedResult.signedTxXdr) {
-        throw new Error(
-          signedResult.error ||
-            "Freighter did not return a signed transaction.",
-        );
-      }
+      console.log(`Transaction signed by ${adapter.name}`);
 
-      // Transaction signed successfully
-      console.log("Transaction signed by Freighter");
-
-      // Store the signed XDR in state for the broadcast step
-      resolvedSignedXdr = signedResult.signedTxXdr;
       setSignedXdr(resolvedSignedXdr);
     } catch (signingError) {
-      setErrorMessage(mapFreighterError(signingError));
+      setErrorMessage(mapWalletError(signingError));
       setIsSigning(false);
       return;
     }
@@ -579,7 +547,7 @@ export function SupportPanel({
           </span>
         </div>
         <p className="mb-4 text-sm text-sky/85">
-          Connect your Freighter wallet to support this creator.
+          Connect your Stellar wallet to support this creator.
         </p>
         <WalletConnect onConnect={setVisitorAddress} />
       </section>
@@ -877,7 +845,7 @@ export function SupportPanel({
           isSubmitting
             ? "Submitting to Stellar network"
             : isSigning
-              ? "Waiting for Freighter signature"
+              ? "Waiting for wallet signature"
               : isFindingPath
                 ? "Finding best exchange path"
                 : `Send support to ${recipientDisplayName}`
@@ -911,7 +879,7 @@ export function SupportPanel({
           {isSubmitting
             ? "Submitting to Stellar network…"
             : isSigning
-              ? "Waiting for Freighter signature…"
+              ? "Waiting for wallet signature…"
               : isFindingPath
                 ? "Finding best exchange path…"
                 : "Send Support"}

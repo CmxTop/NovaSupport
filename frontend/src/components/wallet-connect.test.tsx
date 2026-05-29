@@ -2,11 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { WalletConnect } from '@/components/wallet-connect';
 
-// Mock @stellar/freighter-api
+// Mock @stellar/freighter-api so the Freighter adapter's dynamic import works
 vi.mock('@stellar/freighter-api', () => ({
   getAddress: vi.fn(),
   isAllowed: vi.fn(),
   setAllowed: vi.fn(),
+  signTransaction: vi.fn(),
 }));
 
 // Mock @/lib/config
@@ -21,73 +22,104 @@ vi.mock('@/lib/config', () => ({
 
 import { getAddress, isAllowed, setAllowed } from '@stellar/freighter-api';
 
+const TEST_ADDRESS = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+
 describe('WalletConnect', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
-    // Reset window.stellarLumens mock
-    (window as any).stellarLumens = true;
+    // Make Freighter "available" for tests that need it
+    (window as any).freighter = true;
   });
 
-  it('renders connect button when disconnected', () => {
-    const { container } = render(<WalletConnect />);
-    
+  it('renders wallet selector when disconnected', () => {
+    render(<WalletConnect />);
+
     expect(screen.getByText('Wallet')).toBeInTheDocument();
-    expect(screen.getByText('Connect Freighter to preview Stellar Testnet support.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Connect Freighter' })).toBeInTheDocument();
-    expect(container).toMatchSnapshot();
+    expect(screen.getByText('Choose a wallet to connect.')).toBeInTheDocument();
+    expect(screen.getByText('Freighter')).toBeInTheDocument();
+    expect(screen.getByText('Click to connect')).toBeInTheDocument();
   });
 
-  it('shows address when connected', async () => {
-    const mockAddress = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
-    
+  it('connects and shows address', async () => {
     (isAllowed as any).mockResolvedValue({ isAllowed: true });
-    (getAddress as any).mockResolvedValue({ address: mockAddress, error: null });
+    (getAddress as any).mockResolvedValue({ address: TEST_ADDRESS, error: null });
 
     render(<WalletConnect />);
-    
-    const button = screen.getByRole('button', { name: 'Connect Freighter' });
+
+    const button = screen.getByRole('button', { name: /freighter/i });
     fireEvent.click(button);
 
-    // Wait for async operations
     await waitFor(() => {
-      expect(screen.getByText(/Connected address:/)).toBeInTheDocument();
+      expect(screen.getByText(/Connected:/)).toBeInTheDocument();
     });
     expect(screen.getByText(/GAAAAA/)).toBeInTheDocument();
   });
 
-  it('shows install prompt with link when Freighter is not available', async () => {
-    (window as any).stellarLumens = undefined;
-    
+  it('persists connection across re-renders', async () => {
+    localStorage.setItem('walletAddress', TEST_ADDRESS);
+    localStorage.setItem('walletId', 'freighter');
+
     render(<WalletConnect />);
-    
-    const button = screen.queryByRole('button', { name: 'Connect Freighter' });
-    fireEvent.click(button!);
 
     await waitFor(() => {
-      expect(screen.getByText(/Freighter wallet required/)).toBeInTheDocument();
+      expect(screen.getByText(/Connected:/)).toBeInTheDocument();
     });
-    
-    const installLink = screen.getByRole('link', { name: /Install Freighter/i });
-    expect(installLink).toBeInTheDocument();
-    expect(installLink).toHaveAttribute('href', 'https://freighter.app');
-    expect(installLink).toHaveAttribute('target', '_blank');
-    expect(installLink).toHaveAttribute('rel', 'noopener noreferrer');
   });
 
-  it('does not render connect button when Freighter is not installed', async () => {
-    (window as any).stellarLumens = undefined;
-    
+  it('disconnects and clears state', async () => {
+    (isAllowed as any).mockResolvedValue({ isAllowed: true });
+    (getAddress as any).mockResolvedValue({ address: TEST_ADDRESS, error: null });
+
     render(<WalletConnect />);
-    
-    const button = screen.getByRole('button', { name: 'Connect Freighter' });
+
+    const connectBtn = screen.getByRole('button', { name: /freighter/i });
+    fireEvent.click(connectBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Connected:/)).toBeInTheDocument();
+    });
+
+    const disconnectBtn = screen.getByText('Disconnect');
+    fireEvent.click(disconnectBtn);
+
+    expect(screen.getByText('Choose a wallet to connect.')).toBeInTheDocument();
+    expect(screen.queryByText(/Connected:/)).not.toBeInTheDocument();
+  });
+
+  it('shows fallback when no wallets detected', () => {
+    (window as any).freighter = undefined;
+
+    render(<WalletConnect />);
+
+    expect(screen.getByText(/No Stellar wallets detected/)).toBeInTheDocument();
+    expect(screen.getByText('Install Freighter')).toBeInTheDocument();
+  });
+
+  it('shows error on connection failure', async () => {
+    const errorMsg = 'User declined request';
+    (isAllowed as any).mockResolvedValue({ isAllowed: true });
+    (getAddress as any).mockResolvedValue({ address: '', error: errorMsg });
+
+    render(<WalletConnect />);
+
+    const button = screen.getByRole('button', { name: /freighter/i });
     fireEvent.click(button);
 
     await waitFor(() => {
-      expect(screen.getByText(/Freighter wallet required/)).toBeInTheDocument();
+      expect(screen.getByText(errorMsg)).toBeInTheDocument();
     });
-    
-    // Button should not be visible after detecting Freighter is not installed
-    expect(screen.queryByRole('button', { name: 'Connect Freighter' })).not.toBeInTheDocument();
+    expect(screen.getByText('Connection failed.')).toBeInTheDocument();
+  });
+
+  it('renders multiple wallet options when multiple detected', () => {
+    (window as any).albedo = true;
+    (window as any).lobstr = true;
+
+    render(<WalletConnect />);
+
+    expect(screen.getByText('Freighter')).toBeInTheDocument();
+    expect(screen.getByText('Albedo')).toBeInTheDocument();
+    expect(screen.getByText('Lobstr')).toBeInTheDocument();
   });
 });

@@ -27,19 +27,18 @@ export function WalletConnect({ onConnect }: WalletConnectProps = {}) {
   const [error, setError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
 
-  // Detect available wallets client-side only
   useEffect(() => {
     setAvailable(getAvailableWallets());
   }, []);
 
-  // Restore persisted session
   useEffect(() => {
     const savedAddress = localStorage.getItem(STORAGE_KEY);
     const savedWalletId = localStorage.getItem(STORAGE_WALLET_ID) as WalletId | null;
     if (savedAddress && savedWalletId) {
       setAddress(savedAddress);
       setActiveWallet(savedWalletId);
-      setStatus(`${savedWalletId.charAt(0).toUpperCase() + savedWalletId.slice(1)} connected.`);
+      const adapter = getWalletAdapter(savedWalletId);
+      setStatus(`${adapter?.name ?? savedWalletId} connected`);
       onConnect?.(savedAddress);
     }
   }, [onConnect]);
@@ -50,7 +49,7 @@ export function WalletConnect({ onConnect }: WalletConnectProps = {}) {
 
     setConnecting(true);
     setError(null);
-    setStatus(`Connecting to ${adapter.name}…`);
+    setStatus(`Connecting to ${adapter.name}...`);
 
     try {
       const pubkey = await adapter.connect();
@@ -58,10 +57,11 @@ export function WalletConnect({ onConnect }: WalletConnectProps = {}) {
       localStorage.setItem(STORAGE_WALLET_ID, walletId);
       setAddress(pubkey);
       setActiveWallet(walletId);
-      setStatus(`${adapter.name} connected on Stellar Testnet.`);
+      setStatus(`${adapter.name} connected`);
       onConnect?.(pubkey);
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Failed to connect ${adapter.name}.`);
+      const msg = err instanceof Error ? err.message : `Failed to connect ${adapter.name}.`;
+      setError(msg);
       setStatus("Connection failed.");
     } finally {
       setConnecting(false);
@@ -99,7 +99,7 @@ export function WalletConnect({ onConnect }: WalletConnectProps = {}) {
 
       {/* Wallet selector — shown when not connected */}
       {!address && (
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-4 flex flex-col gap-2">
           {available.length === 0 ? (
             <p className="text-sm text-sky/60">
               No Stellar wallets detected.{" "}
@@ -111,6 +111,24 @@ export function WalletConnect({ onConnect }: WalletConnectProps = {}) {
               >
                 Install Freighter
               </a>
+              ,{" "}
+              <a
+                href="https://albedo.link"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-mint underline decoration-mint/30 underline-offset-4 hover:decoration-mint"
+              >
+                Albedo
+              </a>
+              , or{" "}
+              <a
+                href="https://lobstr.co"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-mint underline decoration-mint/30 underline-offset-4 hover:decoration-mint"
+              >
+                Lobstr
+              </a>
             </p>
           ) : (
             available.map((wallet) => (
@@ -119,11 +137,16 @@ export function WalletConnect({ onConnect }: WalletConnectProps = {}) {
                 type="button"
                 disabled={connecting}
                 onClick={() => connectWallet(wallet.id)}
-                className="rounded-full border border-mint/40 px-4 py-2 text-sm font-semibold text-mint transition hover:bg-mint hover:text-ink disabled:opacity-50"
+                className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 p-4 text-left transition hover:border-mint/50 hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {connecting && activeWallet === wallet.id
-                  ? "Connecting…"
-                  : `Connect ${wallet.name}`}
+                <span className="text-xl">{wallet.icon}</span>
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-white">{wallet.name}</p>
+                  <p className="text-xs text-sky/60">Click to connect</p>
+                </div>
+                {connecting && activeWallet === wallet.id && (
+                  <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-mint border-t-transparent" />
+                )}
               </button>
             ))
           )}
@@ -131,9 +154,14 @@ export function WalletConnect({ onConnect }: WalletConnectProps = {}) {
       )}
 
       {address && (
-        <div className="mt-4 rounded-2xl border border-mint/30 bg-ink/50 p-3 text-sm text-white">
-          Connected address:{" "}
-          <span className="font-semibold">{truncateAddress(address)}</span>
+        <div className="mt-4 flex items-center gap-3 rounded-2xl border border-mint/30 bg-ink/50 p-3 text-sm text-white">
+          {activeWallet && (
+            <span className="text-lg">{getWalletAdapter(activeWallet)?.icon}</span>
+          )}
+          <span>
+            Connected:{" "}
+            <span className="font-semibold">{truncateAddress(address)}</span>
+          </span>
         </div>
       )}
     </div>
