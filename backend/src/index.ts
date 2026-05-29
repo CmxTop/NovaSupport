@@ -107,6 +107,12 @@ const contractId =
   "";
 const sorobanRpcUrl =
   process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
+const indexerStartLedger = process.env.INDEXER_START_LEDGER
+  ? Number(process.env.INDEXER_START_LEDGER)
+  : undefined;
+const indexerMaxPagesPerTick = process.env.INDEXER_MAX_PAGES_PER_TICK
+  ? Number(process.env.INDEXER_MAX_PAGES_PER_TICK)
+  : undefined;
 
 const eventIndexer =
   contractId.trim().length > 0
@@ -115,6 +121,8 @@ const eventIndexer =
         rpcClient: createSorobanRpcClient(sorobanRpcUrl),
         network: indexerNetwork,
         contractId,
+        startLedger: indexerStartLedger,
+        maxPagesPerTick: indexerMaxPagesPerTick,
       })
     : null;
 

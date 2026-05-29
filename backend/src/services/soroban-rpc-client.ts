@@ -84,24 +84,40 @@ export function createSorobanRpcClient(
   pageSize = 100,
 ): EventIndexerRpcClient {
   return {
-    async fetchEvents({ contractId, cursor }): Promise<RpcEventPage> {
+    async fetchEvents({ contractId, cursor, startLedger }): Promise<RpcEventPage> {
+      // When no cursor exists yet, determine the start ledger:
+      //   - If the caller explicitly provides startLedger (backfill), use it.
+      //   - Otherwise fall back to the current latest ledger so the indexer
+      //     picks up only recent events (safe default).
+      const effectiveStartLedger =
+        cursor || startLedger === undefined
+          ? undefined
+          : startLedger;
+
+      const params: Record<string, unknown> = {
+        filters: [
+          {
+            type: "contract",
+            contractIds: [contractId],
+          },
+        ],
+        pagination: {
+          limit: pageSize,
+          ...(cursor ? { cursor } : {}),
+        },
+      };
+
+      if (effectiveStartLedger !== undefined) {
+        params.startLedger = effectiveStartLedger;
+      } else if (!cursor) {
+        params.startLedger = await getLatestLedger(rpcUrl);
+      }
+
       const requestBody: Record<string, unknown> = {
         jsonrpc: "2.0",
         id: randomUUID(),
         method: "getEvents",
-        params: {
-          filters: [
-            {
-              type: "contract",
-              contractIds: [contractId],
-            },
-          ],
-          pagination: {
-            limit: pageSize,
-            ...(cursor ? { cursor } : {}),
-          },
-          ...(cursor ? {} : { startLedger: await getLatestLedger(rpcUrl) }),
-        },
+        params,
       };
 
       const response = await fetch(rpcUrl, {

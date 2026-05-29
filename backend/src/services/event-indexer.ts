@@ -1,4 +1,8 @@
+ 423-contract-event-indexing-service
+// #281 / #423: Contract event indexing service.
+
 // #321: Contract event indexing service.
+ main
 //
 // Polls Soroban RPC for `SupportEvent`s emitted by the configured contract
 // and persists them as `SupportTransaction` rows so the backend stays in
@@ -50,6 +54,8 @@ export interface EventIndexerRpcClient {
   fetchEvents(args: {
     contractId: string;
     cursor: string;
+    /** Ledger to start from when no cursor exists yet (backfill). */
+    startLedger?: number;
   }): Promise<RpcEventPage>;
 }
 
@@ -60,9 +66,20 @@ export interface EventIndexerOptions {
   contractId: string;
   /** Milliseconds between polls. Defaults to 10s. */
   pollIntervalMs?: number;
+  /**
+   * Ledger to start backfilling from when no cursor exists yet.
+   * Defaults to the latest ledger (no historical backfill).
+   */
+  startLedger?: number;
+  /**
+   * Maximum pages to consume in a single tick. Prevents the indexer
+   * from blocking on a massive backlog. Defaults to 500.
+   */
+  maxPagesPerTick?: number;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 10_000;
+const DEFAULT_MAX_PAGES_PER_TICK = 500;
 
 /**
  * Long-running event indexer. Construct it, call `.start()` from the worker
@@ -75,6 +92,8 @@ export class EventIndexer {
   private readonly network: string;
   private readonly contractId: string;
   private readonly pollIntervalMs: number;
+  private readonly startLedger: number | undefined;
+  private readonly maxPagesPerTick: number;
   private stopped = false;
   private timer: NodeJS.Timeout | null = null;
 
@@ -84,6 +103,8 @@ export class EventIndexer {
     this.network = options.network;
     this.contractId = options.contractId;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    this.startLedger = options.startLedger;
+    this.maxPagesPerTick = options.maxPagesPerTick ?? DEFAULT_MAX_PAGES_PER_TICK;
   }
 
   start(): void {
@@ -102,12 +123,17 @@ export class EventIndexer {
   /**
    * Process a single page of events. Returns the number of events ingested
    * so callers (and tests) can assert progress.
+   *
+   * When called with no stored cursor, the RPC client uses `startLedger`
+   * (if configured) to backfill historical events; otherwise it starts
+   * from the latest ledger.
    */
   async pollOnce(): Promise<{ ingested: number; nextCursor: string | null }> {
     const cursor = await this.readCursor();
     const page = await this.rpcClient.fetchEvents({
       contractId: this.contractId,
       cursor,
+      startLedger: cursor ? undefined : this.startLedger,
     });
 
     if (page.events.length === 0) {
@@ -123,9 +149,25 @@ export class EventIndexer {
     const lastEvent = page.events[page.events.length - 1]!;
     const nextCursor = page.nextPagingToken ?? lastEvent.pagingToken;
 
+    // Resolve recipient addresses to profile IDs so we can link
+    // on-chain events to the correct NovaSupport profiles.
+    const recipientAddresses = [
+      ...new Set(page.events.map((e) => e.recipientAddress)),
+    ];
+    const profiles = await this.prisma.profile.findMany({
+      where: { walletAddress: { in: recipientAddresses } },
+      select: { id: true, walletAddress: true },
+    });
+    const profileByAddress = new Map(
+      profiles.map((p) => [p.walletAddress, p.id]),
+    );
+
     let ingested = 0;
     await this.prisma.$transaction(async (tx) => {
       for (const event of page.events) {
+        const profileId =
+          profileByAddress.get(event.recipientAddress) ?? "__orphan__";
+
         // Use the contract event's tx hash as the natural idempotency key.
         // SupportTransaction.txHash has a unique index so a duplicate insert
         // (e.g. from re-processing the same range during recovery) is a no-op.
@@ -137,6 +179,7 @@ export class EventIndexer {
             assetIssuer: event.assetIssuer,
             recipientAddress: event.recipientAddress,
             supporterAddress: event.supporterAddress,
+            profileId,
             updatedAt: new Date(),
           },
           create: {
@@ -148,11 +191,7 @@ export class EventIndexer {
             recipientAddress: event.recipientAddress,
             stellarNetwork: this.network,
             message: event.message,
-            // The indexer doesn't yet know which Profile to attach the tx
-            // to without a recipient↔profile lookup; that's handled in a
-            // follow-up. For now we mark the row as orphaned so the
-            // resolver job can claim it.
-            profileId: "__orphan__",
+            profileId,
             status: "SUCCESS",
           },
         });
@@ -276,6 +315,23 @@ export class EventIndexer {
   private async tick(): Promise<void> {
     if (this.stopped) return;
     try {
+ 423-contract-event-indexing-service
+      let totalIngested = 0;
+      let pages = 0;
+      // Drain multiple pages per tick so large event histories (backfill)
+      // are processed quickly rather than one page every pollIntervalMs.
+      while (pages < this.maxPagesPerTick) {
+        const { ingested, nextCursor } = await this.pollOnce();
+        totalIngested += ingested;
+        pages++;
+        if (ingested === 0 || nextCursor === null) break;
+      }
+      if (totalIngested > 0) {
+        logger.info(
+          { ingested: totalIngested, pages, contractId: this.contractId },
+          "indexed events",
+        );
+
       const { ingested } = await this.pollOnce();
       if (ingested > 0) {
         logger.info({ ingested, contractId: this.contractId }, "indexed events");
@@ -283,6 +339,7 @@ export class EventIndexer {
         await this.resolveOrphans().catch((err) => {
           logger.warn({ err }, "orphan resolution failed — will retry next tick");
         });
+ main
       }
     } finally {
       this.scheduleNextTick(this.pollIntervalMs);
