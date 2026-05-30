@@ -1,11 +1,19 @@
 "use client";
 
-import { useState } from "react";
-import { getAddress, isAllowed, setAllowed } from "@stellar/freighter-api";
+import { useState, useEffect, useCallback } from "react";
+import {
+  getAvailableWallets,
+  getWalletAdapter,
+  type WalletAdapter,
+  type WalletId,
+} from "@/lib/wallet-adapters";
 
 function truncateAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-6)}`;
 }
+
+const STORAGE_KEY = "walletAddress";
+const STORAGE_WALLET_ID = "walletId";
 
 type WalletConnectProps = {
   onConnect?: (address: string) => void;
@@ -13,51 +21,60 @@ type WalletConnectProps = {
 
 export function WalletConnect({ onConnect }: WalletConnectProps = {}) {
   const [address, setAddress] = useState<string | null>(null);
-  const [status, setStatus] = useState("Connect Freighter to preview Stellar Testnet support.");
-  const [errorType, setErrorType] = useState<"not_installed" | "denied" | "wrong_network" | null>(null);
+  const [activeWallet, setActiveWallet] = useState<WalletId | null>(null);
+  const [available, setAvailable] = useState<WalletAdapter[]>([]);
+  const [status, setStatus] = useState("Choose a wallet to connect.");
+  const [error, setError] = useState<string | null>(null);
+  const [connecting, setConnecting] = useState(false);
 
-  async function connectWallet() {
-    setErrorType(null);
-    try {
-      setStatus("Checking Freighter availability...");
+  useEffect(() => {
+    setAvailable(getAvailableWallets());
+  }, []);
 
-      if (typeof window !== "undefined" && (window as any).stellarLumens === undefined) {
-        setErrorType("not_installed");
-        setStatus("Freighter not found.");
-        return;
-      }
-
-      const access = await isAllowed();
-      if (!access.isAllowed) {
-        const permission = await setAllowed();
-        if (!permission.isAllowed) {
-          setErrorType("denied");
-          setStatus("Permission denied.");
-          return;
-        }
-      }
-
-      const result = await getAddress();
-      if (result.error) {
-        if (result.error.toLowerCase().includes("network")) {
-          setErrorType("wrong_network");
-          setStatus("Wrong network.");
-        } else {
-          setStatus(result.error);
-        }
-        return;
-      }
-
-      setAddress(result.address);
-      setStatus("Freighter connected on Stellar Testnet.");
-      onConnect?.(result.address);
-    } catch (error) {
-      setStatus(
-        error instanceof Error
-          ? error.message
-          : "Unable to connect to Freighter."
-      );
+  useEffect(() => {
+    const savedAddress = localStorage.getItem(STORAGE_KEY);
+    const savedWalletId = localStorage.getItem(STORAGE_WALLET_ID) as WalletId | null;
+    if (savedAddress && savedWalletId) {
+      setAddress(savedAddress);
+      setActiveWallet(savedWalletId);
+      const adapter = getWalletAdapter(savedWalletId);
+      setStatus(`${adapter?.name ?? savedWalletId} connected`);
+      onConnect?.(savedAddress);
     }
+  }, [onConnect]);
+
+  const connectWallet = useCallback(async (walletId: WalletId) => {
+    const adapter = getWalletAdapter(walletId);
+    if (!adapter) return;
+
+    setConnecting(true);
+    setError(null);
+    setStatus(`Connecting to ${adapter.name}...`);
+
+    try {
+      const pubkey = await adapter.connect();
+      localStorage.setItem(STORAGE_KEY, pubkey);
+      localStorage.setItem(STORAGE_WALLET_ID, walletId);
+      setAddress(pubkey);
+      setActiveWallet(walletId);
+      setStatus(`${adapter.name} connected`);
+      onConnect?.(pubkey);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : `Failed to connect ${adapter.name}.`;
+      setError(msg);
+      setStatus("Connection failed.");
+    } finally {
+      setConnecting(false);
+    }
+  }, [onConnect]);
+
+  function disconnectWallet() {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(STORAGE_WALLET_ID);
+    setAddress(null);
+    setActiveWallet(null);
+    setError(null);
+    setStatus("Choose a wallet to connect.");
   }
 
   return (
@@ -66,50 +83,87 @@ export function WalletConnect({ onConnect }: WalletConnectProps = {}) {
         <div>
           <p className="text-xs uppercase tracking-[0.25em] text-mint">Wallet</p>
           <div className="mt-2 text-sm text-sky/80">
-            {errorType === "not_installed" && (
-              <p>
-                Freighter wallet is not installed.{" "}
-                <a
-                  href="https://freighter.app"
-                  target="_blank"
-                  className="text-mint underline decoration-mint/30 underline-offset-4 hover:decoration-mint"
-                >
-                  Install it here →
-                </a>
-              </p>
-            )}
-            {errorType === "denied" && (
-              <p>
-                Connection was denied. Please approve in Freighter and{" "}
-                <button
-                  onClick={connectWallet}
-                  className="text-mint underline decoration-mint/30 underline-offset-4 hover:decoration-mint"
-                >
-                  try again
-                </button>
-                .
-              </p>
-            )}
-            {errorType === "wrong_network" && (
-              <p>Please switch Freighter to Testnet in wallet settings.</p>
-            )}
-            {!errorType && <p>{status}</p>}
+            {error ? <p className="text-red-400">{error}</p> : <p>{status}</p>}
           </div>
         </div>
-        <button
-          type="button"
-          onClick={connectWallet}
-          className="rounded-full bg-mint px-4 py-2 text-sm font-semibold text-ink transition hover:bg-white"
-        >
-          {address ? "Reconnect" : "Connect Freighter"}
-        </button>
+        {address && (
+          <button
+            type="button"
+            onClick={disconnectWallet}
+            className="rounded-full bg-mint px-4 py-2 text-sm font-semibold text-ink transition hover:bg-white"
+          >
+            Disconnect
+          </button>
+        )}
       </div>
-      {address ? (
-        <div className="mt-4 rounded-2xl border border-mint/30 bg-ink/50 p-3 text-sm text-white">
-          Connected address: <span className="font-semibold">{truncateAddress(address)}</span>
+
+      {/* Wallet selector — shown when not connected */}
+      {!address && (
+        <div className="mt-4 flex flex-col gap-2">
+          {available.length === 0 ? (
+            <p className="text-sm text-sky/60">
+              No Stellar wallets detected.{" "}
+              <a
+                href="https://freighter.app"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-mint underline decoration-mint/30 underline-offset-4 hover:decoration-mint"
+              >
+                Install Freighter
+              </a>
+              ,{" "}
+              <a
+                href="https://albedo.link"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-mint underline decoration-mint/30 underline-offset-4 hover:decoration-mint"
+              >
+                Albedo
+              </a>
+              , or{" "}
+              <a
+                href="https://lobstr.co"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-mint underline decoration-mint/30 underline-offset-4 hover:decoration-mint"
+              >
+                Lobstr
+              </a>
+            </p>
+          ) : (
+            available.map((wallet) => (
+              <button
+                key={wallet.id}
+                type="button"
+                disabled={connecting}
+                onClick={() => connectWallet(wallet.id)}
+                className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 p-4 text-left transition hover:border-mint/50 hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <span className="text-xl">{wallet.icon}</span>
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-white">{wallet.name}</p>
+                  <p className="text-xs text-sky/60">Click to connect</p>
+                </div>
+                {connecting && activeWallet === wallet.id && (
+                  <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-mint border-t-transparent" />
+                )}
+              </button>
+            ))
+          )}
         </div>
-      ) : null}
+      )}
+
+      {address && (
+        <div className="mt-4 flex items-center gap-3 rounded-2xl border border-mint/30 bg-ink/50 p-3 text-sm text-white">
+          {activeWallet && (
+            <span className="text-lg">{getWalletAdapter(activeWallet)?.icon}</span>
+          )}
+          <span>
+            Connected:{" "}
+            <span className="font-semibold">{truncateAddress(address)}</span>
+          </span>
+        </div>
+      )}
     </div>
   );
 }
-

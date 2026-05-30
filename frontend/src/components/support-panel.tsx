@@ -1,19 +1,59 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { BASE_FEE, Horizon } from "@stellar/stellar-sdk";
-import { getNetworkLabel, stellarConfig, horizonServer } from "@/lib/stellar";
-import { STELLAR_NETWORK } from "@/lib/config";
+import { useEffect, useState, useCallback, KeyboardEvent } from "react";
+import { useToast } from "@/lib/use-toast";
+import {
+  Asset as StellarAsset,
+  TransactionBuilder,
+} from "@stellar/stellar-sdk";
+import {
+  buildSupportIntent,
+  buildPathPaymentIntent,
+  getNetworkLabel,
+  horizonServer,
+  stellarConfig,
+  withStellarRetry,
+  classifyStellarError,
+} from "@/lib/stellar";
+import {
+  getWalletAdapter,
+  mapWalletError,
+  type WalletId,
+} from "@/lib/wallet-adapters";
 import { WalletConnect } from "./wallet-connect";
+import { TransactionResultModal } from "./transaction-result-modal";
+import { API_BASE_URL } from "@/lib/config";
+import { formatRateLimitedMessage, parseRateLimitInfo } from "@/lib/rate-limit";
+
+type Asset = {
+  code: string;
+  issuer?: string | null;
+};
 
 const FEE_IN_XLM = BASE_FEE / 10_000_000;
 const IS_TESTNET = STELLAR_NETWORK !== "PUBLIC";
 
 type SupportPanelProps = {
   walletAddress: string;
+  acceptedAssets?: Asset[];
+  profileId?: string;
+  recipientDisplayName?: string;
 };
 
-export function SupportPanel({ walletAddress }: SupportPanelProps) {
+export function SupportPanel({
+  walletAddress,
+  acceptedAssets,
+  profileId,
+  recipientDisplayName = "Creator",
+}: SupportPanelProps) {
+  const paymentAssetSelectId = "support-payment-asset";
+  const amountInputId = "support-amount";
+  const amountErrorId = "support-amount-error";
+  const balanceErrorId = "support-balance-error";
+  const messageInputId = "support-message";
+  const recurringToggleId = "support-recurring-toggle";
+  const frequencyGroupId = "support-frequency";
+
   const [visitorAddress, setVisitorAddress] = useState<string | null>(null);
   const [amount, setAmount] = useState("");
   const [assetCode, setAssetCode] = useState("XLM");
@@ -64,8 +104,13 @@ export function SupportPanel({ walletAddress }: SupportPanelProps) {
   if (!visitorAddress) {
     return (
       <section className="rounded-[2rem] border border-gold/25 bg-gold/10 p-7 text-center">
+        <div className="mb-4">
+          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">
+            {networkLabel}
+          </span>
+        </div>
         <p className="mb-4 text-sm text-sky/85">
-          Connect your Freighter wallet to support this creator.
+          Connect your Stellar wallet to support this creator.
         </p>
         <WalletConnect onConnect={setVisitorAddress} />
       </section>
@@ -74,22 +119,262 @@ export function SupportPanel({ walletAddress }: SupportPanelProps) {
 
   return (
     <section className="rounded-[2rem] border border-gold/25 bg-gold/10 p-7">
-      <p className="text-xs uppercase tracking-[0.25em] text-gold">Support</p>
-      <h2 className="mt-3 text-2xl font-semibold text-white">Send Support</h2>
+      <div className="mb-4">
+        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">
+          {networkLabel}
+        </span>
+      </div>
 
-      <div className="mt-6 grid gap-4 sm:grid-cols-3">
-        <div className="rounded-3xl border border-white/10 bg-ink/40 p-4">
-          <p className="text-xs uppercase tracking-[0.2em] text-sky/70">Network</p>
-          <p className="mt-2 font-semibold text-white">{getNetworkLabel()}</p>
+      <div className="mb-6">
+        <p className="text-xs uppercase tracking-[0.25em] text-gold mb-2">
+          Recipient Address
+        </p>
+        <div className="flex items-center p-3 rounded-xl bg-white/5 border border-white/10 group">
+          <code 
+            onKeyDown={handleKeyDown}
+            tabIndex={0}
+            aria-label={`Recipient Stellar wallet address: ${walletAddress}. Press Ctrl+C to copy.`}
+            className="text-xs text-indigo-400 font-mono break-all flex-1 focus:outline-none focus:ring-1 focus:ring-mint/50 rounded p-1"
+          >
+            {walletAddress}
+          </code>
+          <button 
+            onClick={handleCopy}
+            aria-label="Copy recipient address to clipboard"
+            title="Copy to clipboard"
+            className="ml-2 p-1.5 text-gray-400 hover:text-white transition-colors focus:outline-none focus:ring-1 focus:ring-mint/50 rounded"
+          >
+            {copied ? (
+              <span className="text-mint flex items-center gap-1 text-[10px] font-bold">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                </svg>
+                Copied
+              </span>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 12-2h2a2 2 0 12 2m0 0h2a2 2 0 12 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+              </svg>
+            )}
+          </button>
         </div>
-        <div className="rounded-3xl border border-white/10 bg-ink/40 p-4">
-          <p className="text-xs uppercase tracking-[0.2em] text-sky/70">Horizon</p>
-          <p className="mt-2 break-all text-sm text-white">{stellarConfig.horizonUrl}</p>
+      </div>
+
+      <p className="text-xs uppercase tracking-[0.25em] text-gold">
+        Support intent
+      </p>
+      <h2 className="mt-3 text-2xl font-semibold text-white">
+        Select assets & support
+      </h2>
+
+      <div className="mt-6 space-y-4">
+        {/* Payment Asset Selector */}
+        <div>
+          <label
+            htmlFor={paymentAssetSelectId}
+            className="text-xs uppercase tracking-[0.2em] text-sky/70 block mb-2"
+          >
+            Pay with
+          </label>
+          <select
+            id={paymentAssetSelectId}
+            aria-label="Payment asset"
+            value={
+              paymentAsset
+                ? paymentAsset.code === "XLM"
+                  ? "native"
+                  : `${paymentAsset.code}:${paymentAsset.issuer}`
+                : ""
+            }
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val === "native") setPaymentAsset({ code: "XLM" });
+              else {
+                const [code, issuer] = val.split(":");
+                setPaymentAsset({ code, issuer });
+              }
+            }}
+            className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white focus:border-mint/50 focus:outline-none appearance-none"
+          >
+            {visitorBalances.map((b: any) => (
+              <option
+                key={
+                  b.asset_type === "native"
+                    ? "native"
+                    : `${b.asset_code}:${b.asset_issuer}`
+                }
+                value={
+                  b.asset_type === "native"
+                    ? "native"
+                    : `${b.asset_code}:${b.asset_issuer}`
+                }
+                className="bg-ink text-white"
+              >
+                {b.asset_type === "native" ? "XLM" : b.asset_code} (
+                {parseFloat(b.balance).toFixed(2)})
+              </option>
+            ))}
+          </select>
         </div>
-        <div className="rounded-3xl border border-white/10 bg-ink/40 p-4">
-          <p className="text-xs uppercase tracking-[0.2em] text-sky/70">Recipient</p>
-          <p className="mt-2 break-all text-sm text-white">{walletAddress}</p>
+
+        {/* Amount Input */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <label
+              htmlFor={amountInputId}
+              className="text-xs uppercase tracking-[0.2em] text-sky/70"
+            >
+              Amount
+            </label>
+            {visitorAddress && (
+              <div
+                className="text-[10px] font-medium text-sky/50"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                {isBalanceLoading ? (
+                  <span className="animate-pulse">Fetching balance...</span>
+                ) : !isAccountFunded ? (
+                  <a 
+                    href="https://laboratory.stellar.org/#friendbot" 
+                    target="_blank" 
+                    className="text-yellow-500 hover:underline"
+                  >
+                    Account not funded (Testnet)
+                  </a>
+                ) : (
+                  <span>Available: {availableBalance.toFixed(2)} {paymentAsset?.code || "XLM"}</span>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <input
+              id={amountInputId}
+              type="number"
+              min="0.0000001"
+              step="0.0000001"
+              placeholder="0.00"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              aria-label="Support amount"
+              aria-describedby={`${amountErrorId} ${balanceErrorId}`}
+              aria-invalid={Boolean(showError || (isOverBalance && isValidAmount))}
+              className="flex-1 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-sky/50 focus:border-mint/50 focus:outline-none"
+            />
+            <div className="flex items-center rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-sky/80 min-w-[80px] justify-center">
+              <span className="font-semibold text-white">
+                {paymentAsset?.code || "XLM"}
+              </span>
+            </div>
+          </div>
+          {showError && (
+            <p id={amountErrorId} className="mt-2 text-xs text-red-400">
+              Please enter a positive amount
+            </p>
+          )}
+          {isOverBalance && isValidAmount && (
+            <p id={balanceErrorId} className="mt-2 text-xs text-red-400">
+              Insufficient balance (Limit: {availableBalance.toFixed(7)})
+            </p>
+          )}
         </div>
+
+        {estimatedReceived && (
+          <div className="p-3 rounded-xl bg-white/5 border border-white/5">
+            <p className="text-xs text-mint text-center">
+              Creator receives ~{parseFloat(estimatedReceived).toFixed(4)}{" "}
+              {recipientAsset.code}
+            </p>
+          </div>
+        )}
+
+        {noPathFound && (
+          <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20">
+            <p className="text-xs text-red-400 text-center">
+              No DEX path found from {paymentAsset?.code} to{" "}
+              {recipientAsset.code}
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Message Input */}
+      <div className="mt-6">
+        <div className="flex items-center justify-between mb-2">
+          <label
+            htmlFor={messageInputId}
+            className="text-xs uppercase tracking-[0.2em] text-sky/70"
+          >
+            Leave a message (optional)
+          </label>
+          <span className={`text-[10px] font-medium ${message.length >= 28 ? 'text-red-400' : 'text-sky/40'}`}>
+            {message.length} / 28
+          </span>
+        </div>
+        <textarea
+          id={messageInputId}
+          value={message}
+          onChange={(e) => setMessage(e.target.value.slice(0, 28))}
+          placeholder="e.g. Keep up the great work!"
+          rows={2}
+          aria-label="Optional message to the creator"
+          className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-sky/30 focus:border-mint/50 focus:outline-none resize-none"
+        />
+      </div>
+
+      {/* Recurring Support Toggle */}
+      <div className="mt-6 rounded-xl border border-white/10 bg-white/5 p-4">
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            id={recurringToggleId}
+            type="checkbox"
+            checked={isRecurring}
+            onChange={(e) => setIsRecurring(e.target.checked)}
+            aria-label="Make support recurring"
+            className="h-4 w-4 rounded border-white/20 bg-white/10 text-mint focus:ring-mint focus:ring-offset-0"
+          />
+          <span className="text-sm text-white font-medium">
+            Make it recurring
+          </span>
+        </label>
+
+        {isRecurring && (
+          <div className="mt-4">
+            <label
+              id={frequencyGroupId}
+              className="text-xs uppercase tracking-[0.2em] text-sky/70 block mb-2"
+            >
+              Frequency
+            </label>
+            <div className="flex gap-2" role="group" aria-labelledby={frequencyGroupId}>
+              <button
+                type="button"
+                onClick={() => setFrequency("weekly")}
+                aria-label="Set recurring frequency to weekly"
+                className={`flex-1 rounded-xl px-4 py-2 text-sm font-medium transition ${
+                  frequency === "weekly"
+                    ? "bg-mint text-ink"
+                    : "border border-white/10 bg-white/5 text-white hover:bg-white/10"
+                }`}
+              >
+                Weekly
+              </button>
+              <button
+                type="button"
+                onClick={() => setFrequency("monthly")}
+                aria-label="Set recurring frequency to monthly"
+                className={`flex-1 rounded-xl px-4 py-2 text-sm font-medium transition ${
+                  frequency === "monthly"
+                    ? "bg-mint text-ink"
+                    : "border border-white/10 bg-white/5 text-white hover:bg-white/10"
+                }`}
+              >
+                Monthly
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {accountNotFound && IS_TESTNET && (

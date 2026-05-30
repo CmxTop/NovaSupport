@@ -57,9 +57,7 @@ changes to the contract.
 - **No admin key.** There is no admin or owner address stored in the contract. No upgrade
   authority, pause function, or privileged operation exists.
 
-- **Immutable once deployed.** The contract has no `upgrade` entry point. Once deployed to
-  a contract ID, the WASM cannot be swapped out. Deploy a new contract instance to ship
-  changes.
+- **Immutable once deployed.** The contract has no `upgrade` entry point or admin key. Once deployed to a contract ID, the WASM cannot be altered. This ensures that the logic seen at the time of deployment is what will always execute for that ID. Any "upgrade" requires deploying a new contract instance and updating the platform to use the new ID.
 
 - **Events are trusted as-is.** The backend and frontend are responsible for validating
   event data. The contract emits whatever values it receives; it does not cross-check
@@ -67,6 +65,17 @@ changes to the contract.
 
 - **`support_count` is a best-effort metric.** It counts invocations of `support()`, not
   unique supporters or verified payments. Do not use it as a financial audit trail.
+
+## Deployment and upgrade security
+
+There is no privileged upgrade path for an existing contract ID. A contract change requires:
+
+1. Building and testing the new WASM locally with `cargo test` and `stellar contract build`.
+2. Deploying a new contract instance, which produces a new contract ID.
+3. Migrating any state that must survive the change by reading old contract state/events and initializing equivalent state in the new contract.
+4. Updating frontend and backend environment variables to the new contract ID only after Testnet verification.
+
+Keep the old contract ID in release notes and monitoring so historical events remain auditable. Never assume a frontend config change alone migrates on-chain state.
 
 ---
 
