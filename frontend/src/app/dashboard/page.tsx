@@ -84,6 +84,7 @@ export default function DashboardPage() {
   const [deliveriesLoading, setDeliveriesLoading] = useState<string | null>(null);
   const [csvLoading, setCsvLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [embedCopied, setEmbedCopied] = useState(false);
 
   useEffect(() => {
     async function loadDashboard() {
@@ -330,6 +331,27 @@ export default function DashboardPage() {
     } finally {
       setCsvLoading(false);
     }
+  };
+
+  const getEmbedCode = (user: string) =>
+    `<iframe\n  src="https://novasupport.xyz/embed/${user}"\n  width="400"\n  height="320"\n  frameborder="0"\n  style="border-radius:16px"\n></iframe>`;
+
+  const handleCopyEmbed = async () => {
+    if (!username) return;
+    const code = getEmbedCode(username);
+    try {
+      await navigator.clipboard.writeText(code);
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = code;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
+    setEmbedCopied(true);
+    setToast({ message: "Embed code copied to clipboard!", type: "success" });
+    setTimeout(() => setEmbedCopied(false), 2000);
   };
 
   if (loading) {
@@ -801,6 +823,43 @@ export default function DashboardPage() {
               })}
             </div>
           )}
+        </section>
+
+        {/* Embed Widget Section */}
+        <section className="space-y-4">
+          <h2 className="text-sm font-semibold uppercase tracking-widest text-steel">
+            Embed Your Widget
+          </h2>
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-6 space-y-4">
+            <p className="text-sm text-steel">
+              Copy the code below and paste it on your website to add your support widget.
+            </p>
+            <div className="relative">
+              <pre className="rounded-lg bg-ink/60 px-4 py-3 text-xs text-mint font-mono overflow-x-auto whitespace-pre-wrap break-all">
+                {username ? getEmbedCode(username) : ""}
+              </pre>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={handleCopyEmbed}
+                className="flex min-h-[44px] items-center gap-2 rounded-lg bg-mint/10 px-4 py-3 text-xs font-semibold text-mint hover:bg-mint/20 transition-colors"
+              >
+                {embedCopied ? <Check size={14} /> : <Copy size={14} />}
+                {embedCopied ? "Copied!" : "Copy code"}
+              </button>
+              {username && (
+                <a
+                  href={`/embed/${username}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex min-h-[44px] items-center gap-2 rounded-lg bg-white/5 px-4 py-3 text-xs font-semibold text-steel hover:bg-white/10 transition-colors"
+                >
+                  <Eye size={14} />
+                  Preview widget →
+                </a>
+              )}
+            </div>
+          </div>
         </section>
 
         {/* Transactions Section */}

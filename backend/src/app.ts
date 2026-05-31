@@ -3548,9 +3548,9 @@ All errors return JSON with an \`error\` field and optional \`code\`:
     }
   });
 
-  // ── Profile Stats ──────────────────────────────────────────────────────
+  // ── Profile Badges ─────────────────────────────────────────────────────
 
-  app.get("/profiles/:username/stats", async (req, res) => {
+  v1Router.get("/profiles/:username/badges", async (req, res) => {
     try {
       const profile = await prisma.profile.findUnique({
         where: { username: req.params.username },
