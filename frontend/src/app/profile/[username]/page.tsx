@@ -6,6 +6,7 @@ import { SupportPanel } from "@/components/support-panel";
 import { ProfileTabs } from "@/components/profile-tabs";
 import { QRCodeButton } from "@/components/qr-code-button";
 import { RSSFeedButton } from "@/components/rss-feed-button";
+import { ShareButton } from "@/components/share-button";
 import { EmptyState } from "@/components/empty-state";
 import { EmbedCodeGenerator } from "@/components/embed-widget";
 import { MilestoneCard } from "@/components/milestone-card";
@@ -245,6 +246,7 @@ export default async function ProfilePage({ params }: PageProps) {
             <div className="px-2 flex gap-2">
               <QRCodeButton username={profile.username} />
               <RSSFeedButton username={profile.username} />
+              <ShareButton displayName={profile.displayName} username={profile.username} />
             </div>
           </div>
 

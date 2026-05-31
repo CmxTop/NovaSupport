@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
 import { Toast } from "@/components/toast";
 import { 
@@ -381,9 +382,19 @@ export default function DashboardPage() {
           <h1 className="text-3xl font-bold tracking-tight text-white">
             Creator <span className="text-mint">Dashboard</span>
           </h1>
-          <p className="text-steel">
-            Manage your profile and funding goals
-          </p>
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-steel">
+              Manage your profile and funding goals
+            </p>
+            {username && (
+              <Link
+                href={`/profile/${username}`}
+                className="shrink-0 text-sm text-sky/60 hover:text-mint transition-colors"
+              >
+                View public profile →
+              </Link>
+            )}
+          </div>
         </header>
 
         {/* Summary Cards */}
