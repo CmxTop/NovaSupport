@@ -4,6 +4,8 @@ import { useEffect, useState, useCallback, KeyboardEvent } from "react";
 import { useToast } from "@/lib/use-toast";
 import {
   Asset as StellarAsset,
+  BASE_FEE,
+  Horizon,
   TransactionBuilder,
 } from "@stellar/stellar-sdk";
 import {
@@ -22,7 +24,7 @@ import {
 } from "@/lib/wallet-adapters";
 import { WalletConnect } from "./wallet-connect";
 import { TransactionResultModal } from "./transaction-result-modal";
-import { API_BASE_URL } from "@/lib/config";
+import { API_BASE_URL, STELLAR_NETWORK } from "@/lib/config";
 import { formatRateLimitedMessage, parseRateLimitInfo } from "@/lib/rate-limit";
 
 type Asset = {
@@ -30,7 +32,7 @@ type Asset = {
   issuer?: string | null;
 };
 
-const FEE_IN_XLM = BASE_FEE / 10_000_000;
+const FEE_IN_XLM = Number(BASE_FEE) / 10_000_000;
 const IS_TESTNET = STELLAR_NETWORK !== "PUBLIC";
 
 type SupportPanelProps = {
@@ -61,6 +63,31 @@ export function SupportPanel({
   const [balanceLoading, setBalanceLoading] = useState(false);
   const [balanceError, setBalanceError] = useState<string | null>(null);
   const [accountNotFound, setAccountNotFound] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [paymentAsset, setPaymentAsset] = useState<{ code: string; issuer?: string }>({ code: "XLM" });
+  const [visitorBalances, setVisitorBalances] = useState<any[]>([]);
+  const [estimatedReceived, setEstimatedReceived] = useState<string | null>(null);
+  const [noPathFound, setNoPathFound] = useState(false);
+  const [message, setMessage] = useState("");
+  const [isRecurring, setIsRecurring] = useState(false);
+  const [frequency, setFrequency] = useState<"weekly" | "monthly">("monthly");
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(walletAddress);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // silently fail
+    }
+  }, [walletAddress]);
+
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "c") {
+      e.preventDefault();
+      handleCopy();
+    }
+  }, [handleCopy]);
 
   const loadBalance = async (address: string) => {
     if (!address) return;
@@ -95,11 +122,32 @@ export function SupportPanel({
     }
   }, [visitorAddress]);
 
+  useEffect(() => {
+    if (!visitorAddress) return;
+    async function fetchBalances() {
+      try {
+        const account = await horizonServer.loadAccount(visitorAddress);
+        setVisitorBalances(account.balances as any[]);
+      } catch {
+        setVisitorBalances([]);
+      }
+    }
+    fetchBalances();
+  }, [visitorAddress]);
+
   const parsedAmount = parseFloat(amount);
   const hasValidAmount = !isNaN(parsedAmount) && parsedAmount > 0;
   const parsedBalance = balance ? parseFloat(balance) : 0;
   const totalNeeded = hasValidAmount ? parsedAmount + FEE_IN_XLM : 0;
   const insufficientBalance = hasValidAmount && totalNeeded > parsedBalance;
+  const networkLabel = getNetworkLabel();
+  const isBalanceLoading = balanceLoading;
+  const isAccountFunded = !accountNotFound && balance !== null;
+  const availableBalance = parsedBalance;
+  const showError = !hasValidAmount && amount !== "";
+  const isOverBalance = insufficientBalance;
+  const isValidAmount = hasValidAmount;
+  const recipientAsset = { code: "XLM" };
 
   if (!visitorAddress) {
     return (
