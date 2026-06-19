@@ -1563,6 +1563,17 @@ All errors return JSON with an \`error\` field and optional \`code\`:
     }
 
     try {
+      // Resolve the User FK. Normal JWTs from /auth/verify always carry userId;
+      // JWTs signed without userId (e.g. older tokens) fall back to finding or
+      // creating a User by wallet address (mirroring what /auth/verify does).
+      let ownerId = req.auth.userId;
+      if (!ownerId) {
+        const existing = await prisma.user.findFirst({ where: { email: walletAddress } });
+        ownerId = existing
+          ? existing.id
+          : (await prisma.user.create({ data: { email: walletAddress } })).id;
+      }
+
       const emailVerificationToken = email ? randomBytes(32).toString("hex") : undefined;
       const emailVerificationExpiry = email ? new Date(Date.now() + 24 * 60 * 60 * 1000) : undefined;
 
@@ -1579,7 +1590,7 @@ All errors return JSON with an \`error\` field and optional \`code\`:
           websiteUrl,
           twitterHandle,
           githubHandle,
-          ownerId: req.auth.userId || req.auth.walletAddress,
+          ownerId,
           acceptedAssets: { create: acceptedAssets },
         },
         include: { acceptedAssets: true },
