@@ -30,6 +30,7 @@ export async function processDueRecurringSupports() {
     }
 
     try {
+      const supporter = support.supporter;
       // Calculate nextRunAt based on frequency
       const nextRunAt = new Date(now);
       if (support.frequency === "weekly") {
@@ -42,7 +43,7 @@ export async function processDueRecurringSupports() {
       await prisma.$transaction(async (tx: any) => {
         // Create the pending SupportTransaction
         const txHash = `pending_${crypto.randomUUID()}`;
-        
+
         await tx.supportTransaction.create({
           data: {
             txHash,
@@ -54,7 +55,7 @@ export async function processDueRecurringSupports() {
             recipientAddress: support.profile.walletAddress,
             profileId: support.profileId,
             supporterId: support.supporterId,
-            supporterAddress: support.supporter.email,
+            supporterAddress: supporter.email,
           },
         });
 
