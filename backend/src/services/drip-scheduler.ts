@@ -17,7 +17,20 @@ export async function processDueRecurringSupports() {
   });
 
   for (const support of dueSupports) {
+    // #608: supporterId is NULL when the supporter's account was deleted (SET NULL FK).
+    // Mark the subscription cancelled so it stops appearing as due and so
+    // the profile owner can see the cancellation in their dashboard.
+    if (!support.supporter) {
+      await prisma.recurringSupport.update({
+        where: { id: support.id },
+        data: { status: "cancelled", cancelledAt: new Date() },
+      });
+      logger.info({ dripId: support.id, profileId: support.profileId }, "Recurring support cancelled: supporter account deleted");
+      continue;
+    }
+
     try {
+      const supporter = support.supporter;
       // Calculate nextRunAt based on frequency
       const nextRunAt = new Date(now);
       if (support.frequency === "weekly") {
@@ -30,7 +43,7 @@ export async function processDueRecurringSupports() {
       await prisma.$transaction(async (tx: any) => {
         // Create the pending SupportTransaction
         const txHash = `pending_${crypto.randomUUID()}`;
-        
+
         await tx.supportTransaction.create({
           data: {
             txHash,
@@ -42,7 +55,7 @@ export async function processDueRecurringSupports() {
             recipientAddress: support.profile.walletAddress,
             profileId: support.profileId,
             supporterId: support.supporterId,
-            supporterAddress: support.supporter.email,
+            supporterAddress: supporter.email,
           },
         });
 
