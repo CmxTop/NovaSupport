@@ -99,6 +99,9 @@ jobs:
       - name: Run backend tests
         run: npm run test
 
+      - name: Lint backend
+        run: npm run lint
+
       - name: Build backend
         run: npm run build
 

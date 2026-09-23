@@ -7,7 +7,6 @@ import { AppShell } from "@/components/app-shell";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { API_BASE_URL } from "@/lib/config";
 import { apiFetch } from "@/lib/api-client";
-import { stellarExpertUrl } from "@/lib/stellar";
 import { getWalletAdapter, type WalletId } from "@/lib/wallet-adapters";
 import {
   AreaChart,
@@ -41,7 +40,6 @@ interface AnalyticsData {
     activeDrips: number;
   };
   dailyContributions: { date: string; amount: number }[];
-  assetBreakdown: { name: string; value: number }[];
   recentTransactions: {
     id: string;
     type: string;
@@ -57,16 +55,6 @@ type ProfileSettings = {
   email?: string | null;
   emailVerified?: boolean;
   notifyOnSupport?: boolean;
-};
-
-type TransactionCsvRow = {
-  createdAt: string;
-  amount: string;
-  assetCode: string;
-  supporterAddress: string;
-  message: string;
-  status: string;
-  txHash: string;
 };
 
 type ChartPoint = {
@@ -140,9 +128,6 @@ function normalizeAnalyticsResponse(json: unknown): AnalyticsData {
   const dailySource = (payload.dailyContributions ??
     payload.daily_contributions ??
     []) as unknown[];
-  const assetSource = (payload.assetBreakdown ??
-    payload.asset_breakdown ??
-    []) as unknown[];
   const txSource = (payload.recentTransactions ??
     payload.recent_transactions ??
     payload.transactions ??
@@ -180,18 +165,6 @@ function normalizeAnalyticsResponse(json: unknown): AnalyticsData {
       return {
         date: toString(item.date, `Day ${index + 1}`),
         amount: toNumber(item.amount ?? item.totalAmount ?? item.total_amount),
-      };
-    }),
-    assetBreakdown: assetSource.map((entry) => {
-      const item = entry as Record<string, unknown>;
-      return {
-        name: toString(
-          item.name ?? item.assetCode ?? item.asset_code,
-          "Unknown",
-        ),
-        value: toNumber(
-          item.value ?? item.amount ?? item.totalAmount ?? item.total_amount,
-        ),
       };
     }),
     recentTransactions: txSource.map((entry, index) => {
@@ -254,50 +227,6 @@ function normalizeTimeseriesResponse(json: unknown): ChartPoint[] {
       ),
     };
   });
-}
-
-function csvEscape(value: string): string {
-  const escaped = value.replace(/"/g, '""');
-  return `"${escaped}"`;
-}
-
-function downloadCsv(rows: TransactionCsvRow[]): void {
-  const headers = [
-    "Date",
-    "Amount",
-    "Asset",
-    "From Address",
-    "Message",
-    "Status",
-    "TX Hash",
-    "Stellar Expert URL",
-  ];
-  const lines = rows.map((row) => {
-    const expertUrl = stellarExpertUrl("tx", row.txHash);
-    return [
-      new Date(row.createdAt).toISOString(),
-      row.amount,
-      row.assetCode,
-      row.supporterAddress,
-      row.message,
-      row.status,
-      row.txHash,
-      expertUrl,
-    ]
-      .map(csvEscape)
-      .join(",");
-  });
-
-  const csv = `${headers.join(",")}\n${lines.join("\n")}`;
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "novasupport-transactions.csv";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
 }
 
 type AssetBreakdownEntry = {
